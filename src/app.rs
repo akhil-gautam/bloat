@@ -27,6 +27,39 @@ pub enum Tab {
     Overview,
     Explorer,
     Cleanup,
+    Logs,
+}
+
+// ---------------------------------------------------------------------------
+// OverviewState
+// ---------------------------------------------------------------------------
+
+pub struct OverviewState {
+    pub selected: usize,
+    pub checked: HashSet<usize>,
+}
+
+impl OverviewState {
+    pub fn new() -> Self {
+        Self {
+            selected: 0,
+            checked: HashSet::new(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Deletion log
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct LogEntry {
+    pub timestamp: String,
+    pub name: String,
+    pub size: u64,
+    pub method: String, // "Trash" or "Permanent"
+    pub success: bool,
+    pub error: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -160,11 +193,13 @@ pub struct App {
     pub scan_stats: ScanStats,
     pub scan_cancel: Arc<AtomicBool>,
     pub folder_select: FolderSelectState,
+    pub overview: OverviewState,
     pub explorer: ExplorerState,
     pub cleanup: CleanupState,
     pub show_help: bool,
     pub should_quit: bool,
     pub last_clean_result: Option<Vec<crate::cleaner::CleanResult>>,
+    pub logs: Vec<LogEntry>,
 }
 
 impl App {
@@ -182,11 +217,13 @@ impl App {
             scan_stats: ScanStats::default(),
             scan_cancel: Arc::new(AtomicBool::new(false)),
             folder_select,
+            overview: OverviewState::new(),
             explorer: ExplorerState::new(),
             cleanup: CleanupState::new(),
             show_help: false,
             should_quit: false,
             last_clean_result: None,
+            logs: Vec::new(),
         }
     }
 
@@ -280,19 +317,25 @@ impl App {
                 self.tab = Tab::Cleanup;
                 return;
             }
+            KeyCode::Char('4') => {
+                self.tab = Tab::Logs;
+                return;
+            }
             KeyCode::Tab => {
                 self.tab = match self.tab {
                     Tab::Overview => Tab::Explorer,
                     Tab::Explorer => Tab::Cleanup,
-                    Tab::Cleanup => Tab::Overview,
+                    Tab::Cleanup => Tab::Logs,
+                    Tab::Logs => Tab::Overview,
                 };
                 return;
             }
             KeyCode::BackTab => {
                 self.tab = match self.tab {
-                    Tab::Overview => Tab::Cleanup,
+                    Tab::Overview => Tab::Logs,
                     Tab::Explorer => Tab::Overview,
                     Tab::Cleanup => Tab::Explorer,
+                    Tab::Logs => Tab::Cleanup,
                 };
                 return;
             }
@@ -318,6 +361,7 @@ impl App {
             Tab::Overview => self.on_key_overview(key),
             Tab::Explorer => self.on_key_explorer(key),
             Tab::Cleanup => self.on_key_cleanup(key),
+            Tab::Logs => {} // Logs is read-only
         }
     }
 
@@ -377,8 +421,82 @@ impl App {
         }
     }
 
-    fn on_key_overview(&mut self, _key: KeyEvent) {
-        // no-op for now
+    fn on_key_overview(&mut self, key: KeyEvent) {
+        let count = self.tree.as_ref().map_or(0, |t| t.root.children.len().min(5));
+        if count == 0 {
+            return;
+        }
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                if self.overview.selected > 0 {
+                    self.overview.selected -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if self.overview.selected + 1 < count {
+                    self.overview.selected += 1;
+                }
+            }
+            KeyCode::Char(' ') => {
+                let idx = self.overview.selected;
+                if self.overview.checked.contains(&idx) {
+                    self.overview.checked.remove(&idx);
+                } else {
+                    self.overview.checked.insert(idx);
+                }
+            }
+            KeyCode::Char('d') | KeyCode::Enter => {
+                self.delete_overview_selected();
+            }
+            _ => {}
+        }
+    }
+
+    fn delete_overview_selected(&mut self) {
+        if self.overview.checked.is_empty() {
+            return;
+        }
+
+        let tree = match &self.tree {
+            Some(t) => t,
+            None => return,
+        };
+
+        let top: Vec<_> = tree.root.children.iter().take(5).collect();
+        let indices: Vec<usize> = self.overview.checked.iter().cloned().collect();
+        let now = chrono_now();
+
+        for &idx in &indices {
+            if let Some(node) = top.get(idx) {
+                let item = crate::rules::CleanupItem {
+                    name: node.name.clone(),
+                    paths: vec![node.path.clone()],
+                    total_size: node.size,
+                    description: "Deleted from Overview".to_string(),
+                    impact: "".to_string(),
+                    category: crate::rules::Category::System,
+                    safety: crate::rules::Safety::Caution,
+                };
+                let method = crate::cleaner::DeleteMethod::Trash;
+                let result = crate::cleaner::clean_item(&item, method);
+
+                self.logs.push(LogEntry {
+                    timestamp: now.clone(),
+                    name: node.name.clone(),
+                    size: node.size,
+                    method: "Trash".to_string(),
+                    success: result.paths_failed.is_empty(),
+                    error: result.paths_failed.first().map(|(_, e)| e.clone()),
+                });
+            }
+        }
+
+        self.overview.checked.clear();
+        self.overview.selected = 0;
+        // Trigger rescan
+        self.scanning = true;
+        self.tree = None;
+        self.analysis = None;
     }
 
     fn on_key_explorer(&mut self, key: KeyEvent) {
@@ -460,10 +578,19 @@ impl App {
         }
         let mut results = Vec::new();
         let indices: Vec<usize> = self.cleanup.checked.iter().cloned().collect();
+        let now = chrono_now();
         for &idx in &indices {
             if let Some(item) = analysis.items.get(idx) {
                 let method = crate::cleaner::default_method(item.safety);
                 let result = crate::cleaner::clean_item(item, method);
+                self.logs.push(LogEntry {
+                    timestamp: now.clone(),
+                    name: item.name.clone(),
+                    size: item.total_size,
+                    method: format!("{:?}", method),
+                    success: result.paths_failed.is_empty(),
+                    error: result.paths_failed.first().map(|(_, e)| e.clone()),
+                });
                 results.push(result);
             }
         }
@@ -526,19 +653,29 @@ impl App {
 // Event loop
 // ---------------------------------------------------------------------------
 
+/// Simple timestamp without pulling in chrono crate.
+fn chrono_now() -> String {
+    use std::process::Command;
+    Command::new("date")
+        .arg("+%H:%M:%S")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "??:??:??".to_string())
+}
+
 pub fn run(mut terminal: DefaultTerminal, mut app: App) -> std::io::Result<()> {
     let mut rx: Option<mpsc::Receiver<ScanProgress>> = None;
-    /// Track whether we need to start a new scan
-    let mut needs_scan = false;
 
     loop {
-        terminal.draw(|frame| crate::ui::draw(frame, &app))?;
-
-        // Start a new scan if requested
-        if needs_scan {
+        // If scanning requested but no active receiver, start a scan.
+        // This handles: 'r' key, post-cleanup rescan, post-delete rescan.
+        if app.scanning && app.tree.is_none() && rx.is_none() {
             rx = Some(app.start_scan());
-            needs_scan = false;
         }
+
+        terminal.draw(|frame| crate::ui::draw(frame, &app))?;
 
         // Drain scan progress if scanning
         if app.scanning {
@@ -564,7 +701,9 @@ pub fn run(mut terminal: DefaultTerminal, mut app: App) -> std::io::Result<()> {
                         }
                         Ok(ScanProgress::Error(_, _)) => {}
                         Err(mpsc::TryRecvError::Disconnected) => {
+                            // Scanner thread ended — clear receiver
                             app.scanning = false;
+                            rx = None;
                             break;
                         }
                         Err(mpsc::TryRecvError::Empty) => break,
@@ -586,13 +725,10 @@ pub fn run(mut terminal: DefaultTerminal, mut app: App) -> std::io::Result<()> {
                         }
                     }
 
-                    // 'r' key sets scanning=true — detect and start
-                    if app.scanning && app.tree.is_none() && !needs_scan {
-                        if rx.is_none()
-                            || rx.as_ref().map_or(true, |_| app.scan_stats.files_found == 0)
-                        {
-                            needs_scan = true;
-                        }
+                    // If a rescan was requested (cleanup, delete, 'r'),
+                    // clear the old receiver so the top-of-loop logic starts a new one.
+                    if app.scanning && app.tree.is_none() {
+                        rx = None;
                     }
                 }
             }

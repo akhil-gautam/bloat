@@ -144,51 +144,70 @@ fn draw_disk_stats(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_top_consumers(frame: &mut Frame, app: &App, area: Rect) {
-    let mut lines: Vec<Line> = Vec::new();
+    use ratatui::widgets::{List, ListItem};
 
-    lines.push(Line::from(Span::styled(
-        "Top Space Consumers",
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD),
-    )));
+    let mut items: Vec<ListItem> = Vec::new();
+
+    items.push(ListItem::new(Line::from(vec![
+        Span::styled(
+            "Top Space Consumers",
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "  (Space: select, d: delete)",
+            Style::default().fg(Color::DarkGray),
+        ),
+    ])));
 
     if let Some(tree) = &app.tree {
-        let top: Vec<_> = tree
-            .root
-            .children
-            .iter()
-            .take(5)
-            .collect();
+        let top: Vec<_> = tree.root.children.iter().take(5).collect();
 
         for (i, node) in top.iter().enumerate() {
-            let rank = Span::styled(
-                format!(" {}. ", i + 1),
-                Style::default().fg(Color::DarkGray),
-            );
-            let size = Span::styled(
-                format!("{:>10}  ", format_size(node.size)),
-                Style::default().fg(Color::Magenta),
-            );
-            let name = Span::raw(node.name.clone());
-            lines.push(Line::from(vec![rank, size, name]));
+            let checked = if app.overview.checked.contains(&i) {
+                "[x]"
+            } else {
+                "[ ]"
+            };
+            let check_style = if app.overview.checked.contains(&i) {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+
+            let line = Line::from(vec![
+                Span::styled(format!(" {} ", checked), check_style),
+                Span::styled(format!("{}. ", i + 1), Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    format!("{:>10}  ", format_size(node.size)),
+                    Style::default().fg(Color::Magenta),
+                ),
+                Span::raw(node.name.clone()),
+            ]);
+
+            let style = if i == app.overview.selected {
+                Style::default().bg(Color::DarkGray)
+            } else {
+                Style::default()
+            };
+
+            items.push(ListItem::new(line).style(style));
         }
 
         if top.is_empty() {
-            lines.push(Line::from(Span::styled(
-                " No directories found.",
+            items.push(ListItem::new(Line::from(Span::styled(
+                " No items found.",
                 Style::default().fg(Color::DarkGray),
-            )));
+            ))));
         }
     } else {
-        lines.push(Line::from(Span::styled(
+        items.push(ListItem::new(Line::from(Span::styled(
             " No data yet — start a scan.",
             Style::default().fg(Color::DarkGray),
-        )));
+        ))));
     }
 
-    let paragraph = Paragraph::new(lines);
-    frame.render_widget(paragraph, area);
+    let list = List::new(items);
+    frame.render_widget(list, area);
 }
 
 fn draw_reclaimable(frame: &mut Frame, app: &App, area: Rect) {

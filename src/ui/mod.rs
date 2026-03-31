@@ -1,5 +1,6 @@
 pub mod cleanup;
 pub mod explorer;
+pub mod logs;
 pub mod overview;
 
 use ratatui::{
@@ -40,6 +41,7 @@ fn draw_main(frame: &mut Frame, app: &App) {
         Tab::Overview => overview::draw(frame, app, chunks[1]),
         Tab::Explorer => explorer::draw(frame, app, chunks[1]),
         Tab::Cleanup => cleanup::draw(frame, app, chunks[1]),
+        Tab::Logs => logs::draw(frame, app, chunks[1]),
     }
 
     draw_status_bar(frame, app, chunks[2]);
@@ -181,16 +183,23 @@ fn draw_folder_select(frame: &mut Frame, app: &App) {
 // ---------------------------------------------------------------------------
 
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
+    let log_label = if app.logs.is_empty() {
+        "4 Logs".to_string()
+    } else {
+        format!("4 Logs ({})", app.logs.len())
+    };
     let tab_titles = vec![
         Line::from("1 Overview"),
         Line::from("2 Explorer"),
         Line::from("3 Cleanup"),
+        Line::from(log_label),
     ];
 
     let selected = match app.tab {
         Tab::Overview => 0,
         Tab::Explorer => 1,
         Tab::Cleanup => 2,
+        Tab::Logs => 3,
     };
 
     let tabs = Tabs::new(tab_titles)
@@ -219,7 +228,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         ])
     } else {
         Line::from(Span::styled(
-            " q Quit  ? Help  Tab Next  1/2/3 Switch tabs  r Rescan",
+            " q Quit  ? Help  Tab Next  1/2/3/4 Switch tabs  r Rescan",
             Style::default().fg(Color::DarkGray),
         ))
     };
