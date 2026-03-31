@@ -158,6 +158,14 @@ impl App {
                 };
                 return;
             }
+            KeyCode::Char('r') => {
+                if !self.scanning {
+                    self.scanning = true;
+                    self.tree = None;
+                    self.analysis = None;
+                }
+                return;
+            }
             _ => {}
         }
 
