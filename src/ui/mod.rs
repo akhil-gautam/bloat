@@ -250,31 +250,37 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
 // ---------------------------------------------------------------------------
 
 fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let dot = Span::styled(" · ", Style::default().fg(Color::DarkGray));
+    let dim = Style::default().fg(Color::Gray);
+    let key = Style::default().fg(Color::Cyan);
+    let dot = Span::styled(" · ", dim);
+
     let line = if app.scanning {
         Line::from(vec![
-            Span::styled("Esc", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-            Span::styled(": stop", Style::default().fg(Color::DarkGray)),
+            Span::styled(" Esc", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            Span::styled(": stop", dim),
             dot.clone(),
             Span::styled("Scanning...", Style::default().fg(Color::Yellow)),
         ])
     } else {
         Line::from(vec![
-            Span::styled("1-4", Style::default().fg(Color::Cyan)),
-            Span::styled(": tabs", Style::default().fg(Color::DarkGray)),
+            Span::raw(" "),
+            Span::styled("1-4", key),
+            Span::styled(": tabs", dim),
             dot.clone(),
-            Span::styled("r", Style::default().fg(Color::Cyan)),
-            Span::styled(": rescan", Style::default().fg(Color::DarkGray)),
+            Span::styled("r", key),
+            Span::styled(": rescan", dim),
             dot.clone(),
-            Span::styled("q", Style::default().fg(Color::Cyan)),
-            Span::styled(": quit", Style::default().fg(Color::DarkGray)),
+            Span::styled("q", key),
+            Span::styled(": quit", dim),
             dot.clone(),
-            Span::styled("?", Style::default().fg(Color::Cyan)),
-            Span::styled(": help", Style::default().fg(Color::DarkGray)),
+            Span::styled("?", key),
+            Span::styled(": help", dim),
         ])
     };
 
-    frame.render_widget(Paragraph::new(line), area);
+    // Render with a subtle background so it's always visible
+    let bar = Paragraph::new(line).style(Style::default().bg(Color::Rgb(30, 30, 30)));
+    frame.render_widget(bar, area);
 }
 
 // ---------------------------------------------------------------------------
