@@ -1,6 +1,7 @@
 pub mod dev;
 pub mod system;
 pub mod apps;
+pub mod media;
 
 use crate::tree::FsTree;
 use std::path::PathBuf;
@@ -83,6 +84,7 @@ impl RuleRegistry {
         dev::register(&mut registry);
         system::register(&mut registry);
         apps::register(&mut registry);
+        media::register(&mut registry);
         registry
     }
 }
