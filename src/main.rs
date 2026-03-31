@@ -1,4 +1,5 @@
 mod analyzer;
+mod cleaner;
 mod rules;
 mod scanner;
 mod tree;
