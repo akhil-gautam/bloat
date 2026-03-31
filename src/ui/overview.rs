@@ -24,6 +24,10 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     draw_disk_stats(frame, app, chunks[0]);
     draw_top_consumers(frame, app, chunks[2]);
     draw_reclaimable(frame, app, chunks[4]);
+
+    if app.overview.confirm_delete {
+        draw_confirm_overlay(frame, app, area);
+    }
 }
 
 fn draw_scan_progress(frame: &mut Frame, app: &App, area: Rect) {
@@ -244,4 +248,65 @@ fn draw_reclaimable(frame: &mut Frame, app: &App, area: Rect) {
 
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, area);
+}
+
+fn draw_confirm_overlay(frame: &mut Frame, app: &App, area: Rect) {
+    let tree = match &app.tree {
+        Some(t) => t,
+        None => return,
+    };
+
+    let top: Vec<_> = tree.root.children.iter().take(5).collect();
+    let selected_names: Vec<(&str, u64)> = app
+        .overview
+        .checked
+        .iter()
+        .filter_map(|&i| top.get(i).map(|n| (n.name.as_str(), n.size)))
+        .collect();
+    let total_size: u64 = selected_names.iter().map(|(_, s)| s).sum();
+
+    let popup = crate::ui::centered_rect(50, 40, area);
+
+    let mut lines = vec![
+        Line::from(Span::styled(
+            " Move to Trash? ",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+    ];
+
+    for (name, size) in &selected_names {
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("• ", Style::default().fg(Color::Red)),
+            Span::styled(*name, Style::default().fg(Color::White)),
+            Span::styled(
+                format!("  ({})", format_size(*size)),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        format!("  Total: {}", format_size(total_size)),
+        Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled("y", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        Span::raw(" confirm   "),
+        Span::styled("any other key", Style::default().fg(Color::DarkGray)),
+        Span::raw(" cancel"),
+    ]));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Confirm Delete ")
+        .title_style(Style::default().fg(Color::Red))
+        .style(Style::default().bg(Color::Black));
+
+    frame.render_widget(Clear, popup);
+    frame.render_widget(Paragraph::new(lines).block(block), popup);
 }

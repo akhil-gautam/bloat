@@ -37,6 +37,7 @@ pub enum Tab {
 pub struct OverviewState {
     pub selected: usize,
     pub checked: HashSet<usize>,
+    pub confirm_delete: bool,
 }
 
 impl OverviewState {
@@ -44,6 +45,7 @@ impl OverviewState {
         Self {
             selected: 0,
             checked: HashSet::new(),
+            confirm_delete: false,
         }
     }
 }
@@ -422,6 +424,21 @@ impl App {
     }
 
     fn on_key_overview(&mut self, key: KeyEvent) {
+        // Confirmation prompt active
+        if self.overview.confirm_delete {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    self.overview.confirm_delete = false;
+                    self.delete_overview_selected();
+                }
+                _ => {
+                    // Any other key cancels
+                    self.overview.confirm_delete = false;
+                }
+            }
+            return;
+        }
+
         let count = self.tree.as_ref().map_or(0, |t| t.root.children.len().min(5));
         if count == 0 {
             return;
@@ -446,7 +463,9 @@ impl App {
                 }
             }
             KeyCode::Char('d') | KeyCode::Enter => {
-                self.delete_overview_selected();
+                if !self.overview.checked.is_empty() {
+                    self.overview.confirm_delete = true;
+                }
             }
             _ => {}
         }
