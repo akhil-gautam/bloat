@@ -1,3 +1,4 @@
+mod rules;
 mod scanner;
 mod tree;
 
