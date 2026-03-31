@@ -183,36 +183,66 @@ fn draw_folder_select(frame: &mut Frame, app: &App) {
 // ---------------------------------------------------------------------------
 
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1), Constraint::Length(1)])
+        .split(area);
+
+    // Row 1: "bloat v0.1.0" left, tab labels right
     let log_label = if app.logs.is_empty() {
-        "4 Logs".to_string()
+        "[4 Logs]".to_string()
     } else {
-        format!("4 Logs ({})", app.logs.len())
+        format!("[4 Logs ({})]", app.logs.len())
     };
-    let tab_titles = vec![
-        Line::from("1 Overview"),
-        Line::from("2 Explorer"),
-        Line::from("3 Cleanup"),
-        Line::from(log_label),
+
+    let tab_labels: Vec<(&str, &str, Tab)> = vec![
+        ("[1 Overview]", "1 Overview", Tab::Overview),
+        ("[2 Explorer]", "2 Explorer", Tab::Explorer),
+        ("[3 Cleanup]", "3 Cleanup", Tab::Cleanup),
     ];
 
-    let selected = match app.tab {
-        Tab::Overview => 0,
-        Tab::Explorer => 1,
-        Tab::Cleanup => 2,
-        Tab::Logs => 3,
+    let mut tab_spans: Vec<Span> = Vec::new();
+    for (label, _, tab) in &tab_labels {
+        let style = if *tab == app.tab {
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        tab_spans.push(Span::styled(*label, style));
+        tab_spans.push(Span::raw(" "));
+    }
+    // Logs tab
+    let log_style = if app.tab == Tab::Logs {
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
     };
+    tab_spans.push(Span::styled(&log_label, log_style));
 
-    let tabs = Tabs::new(tab_titles)
-        .block(Block::default().borders(Borders::ALL).title(" bloat "))
-        .select(selected)
-        .style(Style::default().fg(Color::White))
-        .highlight_style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        );
+    // Calculate how wide the tab labels are
+    let tabs_text: String = tab_spans.iter().map(|s| s.content.to_string()).collect();
+    let tabs_width = tabs_text.len();
+    let title = "bloat v0.1.0";
+    let total_width = area.width as usize;
+    let padding = total_width.saturating_sub(title.len() + tabs_width);
 
-    frame.render_widget(tabs, area);
+    let mut header_spans = vec![
+        Span::styled(
+            title,
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" ".repeat(padding)),
+    ];
+    header_spans.extend(tab_spans);
+
+    frame.render_widget(Paragraph::new(Line::from(header_spans)), rows[0]);
+
+    // Row 2: separator line
+    let sep = "─".repeat(total_width);
+    frame.render_widget(
+        Paragraph::new(Span::styled(&sep, Style::default().fg(Color::DarkGray))),
+        rows[1],
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -220,21 +250,31 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
 // ---------------------------------------------------------------------------
 
 fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
+    let dot = Span::styled(" · ", Style::default().fg(Color::DarkGray));
     let line = if app.scanning {
         Line::from(vec![
-            Span::styled(" Scanning...  ", Style::default().fg(Color::Yellow)),
             Span::styled("Esc", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-            Span::styled(": stop scan", Style::default().fg(Color::DarkGray)),
+            Span::styled(": stop", Style::default().fg(Color::DarkGray)),
+            dot.clone(),
+            Span::styled("Scanning...", Style::default().fg(Color::Yellow)),
         ])
     } else {
-        Line::from(Span::styled(
-            " q Quit  ? Help  Tab Next  1/2/3/4 Switch tabs  r Rescan",
-            Style::default().fg(Color::DarkGray),
-        ))
+        Line::from(vec![
+            Span::styled("1-4", Style::default().fg(Color::Cyan)),
+            Span::styled(": tabs", Style::default().fg(Color::DarkGray)),
+            dot.clone(),
+            Span::styled("r", Style::default().fg(Color::Cyan)),
+            Span::styled(": rescan", Style::default().fg(Color::DarkGray)),
+            dot.clone(),
+            Span::styled("q", Style::default().fg(Color::Cyan)),
+            Span::styled(": quit", Style::default().fg(Color::DarkGray)),
+            dot.clone(),
+            Span::styled("?", Style::default().fg(Color::Cyan)),
+            Span::styled(": help", Style::default().fg(Color::DarkGray)),
+        ])
     };
 
-    let paragraph = Paragraph::new(line);
-    frame.render_widget(paragraph, area);
+    frame.render_widget(Paragraph::new(line), area);
 }
 
 // ---------------------------------------------------------------------------
