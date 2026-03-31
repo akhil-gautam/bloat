@@ -63,6 +63,15 @@ impl CleanupState {
 // App
 // ---------------------------------------------------------------------------
 
+/// Live stats from an in-progress scan.
+#[derive(Debug, Clone, Default)]
+pub struct ScanStats {
+    pub files_found: u64,
+    pub dirs_found: u64,
+    pub bytes_found: u64,
+    pub current_dir: String,
+}
+
 pub struct App {
     pub tab: Tab,
     pub scan_path: PathBuf,
@@ -70,6 +79,7 @@ pub struct App {
     pub tree: Option<FsTree>,
     pub analysis: Option<AnalysisResult>,
     pub scanning: bool,
+    pub scan_stats: ScanStats,
     pub explorer: ExplorerState,
     pub cleanup: CleanupState,
     pub show_help: bool,
@@ -87,6 +97,7 @@ impl App {
             tree: None,
             analysis: None,
             scanning: false,
+            scan_stats: ScanStats::default(),
             explorer: ExplorerState::new(),
             cleanup: CleanupState::new(),
             show_help: false,
@@ -338,23 +349,38 @@ pub fn run(mut terminal: DefaultTerminal, mut app: App) -> std::io::Result<()> {
     loop {
         terminal.draw(|frame| crate::ui::draw(frame, &app))?;
 
-        // Poll for scan progress
+        // Drain all pending scan progress messages (keep up with fast sender)
         if app.scanning {
-            match rx.try_recv() {
-                Ok(ScanProgress::Done(tree)) => {
-                    app.on_scan_complete(tree);
-                }
-                Ok(ScanProgress::Error(path, err)) => {
-                    eprintln!("Scan error: {} — {}", path.display(), err);
-                }
-                Ok(ScanProgress::Scanning(_)) => {}
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    // Channel dead — need new scan (triggered by cleanup or rescan)
-                    if app.tree.is_none() {
-                        rx = app.start_scan();
+            loop {
+                match rx.try_recv() {
+                    Ok(ScanProgress::Done(tree)) => {
+                        app.on_scan_complete(tree);
+                        break;
                     }
+                    Ok(ScanProgress::Progress {
+                        files_found,
+                        dirs_found,
+                        bytes_found,
+                        current_dir,
+                    }) => {
+                        app.scan_stats = ScanStats {
+                            files_found,
+                            dirs_found,
+                            bytes_found,
+                            current_dir,
+                        };
+                    }
+                    Ok(ScanProgress::Error(path, err)) => {
+                        eprintln!("Scan error: {} — {}", path.display(), err);
+                    }
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        if app.tree.is_none() {
+                            rx = app.start_scan();
+                        }
+                        break;
+                    }
+                    Err(mpsc::TryRecvError::Empty) => break,
                 }
-                Err(mpsc::TryRecvError::Empty) => {}
             }
         }
 

@@ -11,10 +11,15 @@ use crate::rules::Category;
 use crate::ui::{format_size, safety_color};
 
 pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
-    // Scanning state: show centered message
+    // Scanning state: show progress
     if app.scanning {
+        let s = &app.scan_stats;
+        let text = format!(
+            "Scanning...  {} files, {} dirs, {}",
+            s.files_found, s.dirs_found, format_size(s.bytes_found)
+        );
         let paragraph = Paragraph::new(Line::from(Span::styled(
-            "Scanning filesystem...",
+            text,
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),

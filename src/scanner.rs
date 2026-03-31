@@ -9,7 +9,13 @@ use crate::tree::{FsNode, FsTree};
 
 /// Progress events emitted by the async scanner.
 pub enum ScanProgress {
-    Scanning(PathBuf),
+    /// Periodic update with stats about the ongoing scan.
+    Progress {
+        files_found: u64,
+        dirs_found: u64,
+        bytes_found: u64,
+        current_dir: String,
+    },
     Done(FsTree),
     Error(PathBuf, String),
 }
@@ -105,12 +111,125 @@ pub fn scan(root: &Path) -> FsTree {
     tree
 }
 
-/// Spawns a background thread that calls `scan` and sends a `Done` message
-/// (or `Error`) over `tx`.
+/// Spawns a background thread that walks the filesystem, sends periodic
+/// progress updates, and finally sends `Done` with the assembled tree.
 pub fn scan_async(root: PathBuf, tx: mpsc::Sender<ScanProgress>) -> JoinHandle<()> {
     thread::spawn(move || {
-        let _ = tx.send(ScanProgress::Scanning(root.clone()));
-        let tree = scan(&root);
+        let mut nodes: HashMap<PathBuf, FsNode> = HashMap::new();
+        let mut skipped: Vec<PathBuf> = Vec::new();
+        let mut all_paths: Vec<PathBuf> = Vec::new();
+
+        let mut files_found: u64 = 0;
+        let mut dirs_found: u64 = 0;
+        let mut bytes_found: u64 = 0;
+        let mut last_progress = std::time::Instant::now();
+
+        for entry_result in WalkDir::new(&root).skip_hidden(false) {
+            let entry = match entry_result {
+                Ok(e) => e,
+                Err(err) => {
+                    let path = err
+                        .path()
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_else(|| root.to_path_buf());
+                    skipped.push(path);
+                    continue;
+                }
+            };
+
+            let path = entry.path();
+
+            let metadata = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => {
+                    skipped.push(path.clone());
+                    continue;
+                }
+            };
+
+            if metadata.file_type().is_symlink() {
+                skipped.push(path.clone());
+                continue;
+            }
+
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.to_string_lossy().into_owned());
+
+            if metadata.is_dir() {
+                dirs_found += 1;
+                nodes.insert(path.clone(), FsNode::new_dir(name, path.clone()));
+            } else {
+                let size = metadata.len();
+                files_found += 1;
+                bytes_found += size;
+                nodes.insert(path.clone(), FsNode::new_file(name, path.clone(), size));
+            }
+            all_paths.push(path.clone());
+
+            // Send progress every 50ms
+            if last_progress.elapsed() >= std::time::Duration::from_millis(50) {
+                let current_dir = if metadata.is_dir() {
+                    path.to_string_lossy().into_owned()
+                } else {
+                    path.parent()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                };
+                let _ = tx.send(ScanProgress::Progress {
+                    files_found,
+                    dirs_found,
+                    bytes_found,
+                    current_dir,
+                });
+                last_progress = std::time::Instant::now();
+            }
+        }
+
+        // Send final progress before tree assembly
+        let _ = tx.send(ScanProgress::Progress {
+            files_found,
+            dirs_found,
+            bytes_found,
+            current_dir: "Assembling tree...".to_string(),
+        });
+
+        // Assemble tree bottom-up
+        all_paths.sort_by(|a, b| {
+            let da = a.components().count();
+            let db = b.components().count();
+            db.cmp(&da)
+        });
+
+        for path in &all_paths {
+            if let Some(parent) = path.parent() {
+                if parent == path.as_path() {
+                    continue;
+                }
+                if nodes.contains_key(parent) {
+                    if let Some(child) = nodes.remove(path) {
+                        if let Some(parent_node) = nodes.get_mut(parent) {
+                            parent_node.add_child(child);
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut root_node = nodes.remove(&root).unwrap_or_else(|| {
+            FsNode::new_dir(
+                root.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| root.to_string_lossy().into_owned()),
+                root.to_path_buf(),
+            )
+        });
+
+        root_node.sort_by_size();
+
+        let mut tree = FsTree::new(root_node);
+        tree.skipped_paths = skipped;
         let _ = tx.send(ScanProgress::Done(tree));
     })
 }
@@ -239,9 +358,13 @@ mod tests {
         let mut found_done = false;
         let mut total: u64 = 0;
         for msg in rx.try_iter() {
-            if let ScanProgress::Done(tree) = msg {
-                found_done = true;
-                total = tree.total_size();
+            match msg {
+                ScanProgress::Done(tree) => {
+                    found_done = true;
+                    total = tree.total_size();
+                }
+                ScanProgress::Progress { .. } => {} // progress messages are fine
+                ScanProgress::Error(_, _) => {}
             }
         }
 

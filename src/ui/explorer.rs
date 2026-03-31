@@ -110,7 +110,12 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
 
     // --- Scanning state ---
     if app.scanning {
-        let paragraph = Paragraph::new("Scanning filesystem...")
+        let s = &app.scan_stats;
+        let text = format!(
+            "Scanning...  {} files, {} dirs, {}",
+            s.files_found, s.dirs_found, format_size(s.bytes_found)
+        );
+        let paragraph = Paragraph::new(text)
             .alignment(Alignment::Center)
             .style(Style::default().fg(Color::Yellow));
         frame.render_widget(paragraph, area);

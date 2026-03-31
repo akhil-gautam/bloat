@@ -5,10 +5,7 @@ use ratatui::widgets::*;
 
 pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     if app.scanning {
-        let paragraph = Paragraph::new("Scanning filesystem...")
-            .alignment(Alignment::Center)
-            .style(Style::default().fg(Color::Yellow));
-        frame.render_widget(paragraph, area);
+        draw_scan_progress(frame, app, area);
         return;
     }
 
@@ -27,6 +24,68 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     draw_disk_stats(frame, app, chunks[0]);
     draw_top_consumers(frame, app, chunks[2]);
     draw_reclaimable(frame, app, chunks[4]);
+}
+
+fn draw_scan_progress(frame: &mut Frame, app: &App, area: Rect) {
+    let stats = &app.scan_stats;
+
+    // Truncate current_dir to fit the terminal width
+    let max_dir_len = area.width.saturating_sub(4) as usize;
+    let dir_display = if stats.current_dir.len() > max_dir_len {
+        let start = stats.current_dir.len() - max_dir_len + 3;
+        format!("...{}", &stats.current_dir[start..])
+    } else {
+        stats.current_dir.clone()
+    };
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "Scanning filesystem...",
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Files: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{:>10}", format_number(stats.files_found)),
+                Style::default().fg(Color::Cyan),
+            ),
+            Span::raw("    "),
+            Span::styled("Dirs: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{:>10}", format_number(stats.dirs_found)),
+                Style::default().fg(Color::Cyan),
+            ),
+            Span::raw("    "),
+            Span::styled("Size: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{:>10}", format_size(stats.bytes_found)),
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled(dir_display, Style::default().fg(Color::DarkGray)),
+        ]),
+    ];
+
+    let paragraph = Paragraph::new(lines);
+    frame.render_widget(paragraph, area);
+}
+
+/// Format a number with comma separators (e.g. 1,234,567).
+fn format_number(n: u64) -> String {
+    let s = n.to_string();
+    let mut result = String::new();
+    for (i, c) in s.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            result.push(',');
+        }
+        result.push(c);
+    }
+    result.chars().rev().collect()
 }
 
 fn draw_disk_stats(frame: &mut Frame, app: &App, area: Rect) {
