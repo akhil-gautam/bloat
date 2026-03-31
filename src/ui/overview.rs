@@ -91,7 +91,7 @@ fn format_number(n: u64) -> String {
 fn draw_disk_stats(frame: &mut Frame, app: &App, area: Rect) {
     let inner = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(2), Constraint::Length(2)])
+        .constraints([Constraint::Length(2), Constraint::Length(1), Constraint::Length(1)])
         .split(area);
 
     if let Some(stats) = &app.disk_stats {
@@ -132,9 +132,10 @@ fn draw_disk_stats(frame: &mut Frame, app: &App, area: Rect) {
         frame.render_widget(text_paragraph, inner[0]);
 
         let gauge = Gauge::default()
-            .gauge_style(Style::default().fg(gauge_color))
-            .ratio(stats.used_bytes as f64 / stats.total_bytes.max(1) as f64);
-        frame.render_widget(gauge, inner[1]);
+            .gauge_style(Style::default().fg(gauge_color).bg(Color::DarkGray))
+            .ratio(stats.used_bytes as f64 / stats.total_bytes.max(1) as f64)
+            .label(format!("{:.0}%", stats.used_bytes as f64 / stats.total_bytes.max(1) as f64 * 100.0));
+        frame.render_widget(gauge, inner[2]);
     } else {
         let paragraph = Paragraph::new("Disk stats unavailable.")
             .style(Style::default().fg(Color::DarkGray));
