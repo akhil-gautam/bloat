@@ -1,8 +1,10 @@
 mod analyzer;
+mod app;
 mod cleaner;
 mod rules;
 mod scanner;
 mod tree;
+mod ui;
 
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
@@ -86,8 +88,14 @@ fn main() {
     match &cli.command {
         None => {
             let path = cli.scan_path();
-            println!("bloat v0.1.0 — TUI mode (coming soon)");
-            println!("Scan path: {}", path.display());
+            let app = app::App::new(path);
+            let terminal = ratatui::init();
+            let result = app::run(terminal, app);
+            ratatui::restore();
+            if let Err(e) = result {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
         }
         Some(Command::Scan { .. }) => run_scan(&cli),
         Some(Command::Clean { dry_run, safe }) => run_clean(&cli, *dry_run, *safe),
