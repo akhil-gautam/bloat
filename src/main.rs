@@ -1,3 +1,4 @@
+mod analyzer;
 mod rules;
 mod scanner;
 mod tree;
