@@ -157,7 +157,6 @@ fn draw_top_consumers(frame: &mut Frame, app: &App, area: Rect) {
             .root
             .children
             .iter()
-            .filter(|c| c.is_dir)
             .take(5)
             .collect();
 
