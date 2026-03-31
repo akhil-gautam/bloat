@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
 use std::thread::{self, JoinHandle};
 
 use jwalk::WalkDir;
@@ -113,7 +114,12 @@ pub fn scan(root: &Path) -> FsTree {
 
 /// Spawns a background thread that walks the filesystem, sends periodic
 /// progress updates, and finally sends `Done` with the assembled tree.
-pub fn scan_async(root: PathBuf, tx: mpsc::Sender<ScanProgress>) -> JoinHandle<()> {
+/// Pass `cancel` flag — set it to `true` to stop the scan early.
+pub fn scan_async(
+    root: PathBuf,
+    tx: mpsc::Sender<ScanProgress>,
+    cancel: Arc<AtomicBool>,
+) -> JoinHandle<()> {
     thread::spawn(move || {
         let mut nodes: HashMap<PathBuf, FsNode> = HashMap::new();
         let mut skipped: Vec<PathBuf> = Vec::new();
@@ -167,6 +173,11 @@ pub fn scan_async(root: PathBuf, tx: mpsc::Sender<ScanProgress>) -> JoinHandle<(
                 nodes.insert(path.clone(), FsNode::new_file(name, path.clone(), size));
             }
             all_paths.push(path.clone());
+
+            // Check for cancellation
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
 
             // Send progress every 50ms
             if last_progress.elapsed() >= std::time::Duration::from_millis(50) {
@@ -351,7 +362,8 @@ mod tests {
         let root = dir.path().to_path_buf();
 
         let (tx, rx) = mpsc::channel();
-        let handle = scan_async(root, tx);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let handle = scan_async(root, tx, cancel);
         handle.join().expect("thread panicked");
 
         // Drain messages and look for a Done variant.
