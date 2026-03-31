@@ -74,6 +74,7 @@ pub struct App {
     pub cleanup: CleanupState,
     pub show_help: bool,
     pub should_quit: bool,
+    pub last_clean_result: Option<Vec<crate::cleaner::CleanResult>>,
 }
 
 impl App {
@@ -90,6 +91,7 @@ impl App {
             cleanup: CleanupState::new(),
             show_help: false,
             should_quit: false,
+            last_clean_result: None,
         }
     }
 
@@ -239,8 +241,36 @@ impl App {
                     self.cleanup.checked = (0..count).collect();
                 }
             }
+            KeyCode::Enter => {
+                self.execute_cleanup();
+            }
             _ => {}
         }
+    }
+
+    fn execute_cleanup(&mut self) {
+        let analysis = match &self.analysis {
+            Some(a) => a,
+            None => return,
+        };
+        if self.cleanup.checked.is_empty() {
+            return;
+        }
+        let mut results = Vec::new();
+        let indices: Vec<usize> = self.cleanup.checked.iter().cloned().collect();
+        for &idx in &indices {
+            if let Some(item) = analysis.items.get(idx) {
+                let method = crate::cleaner::default_method(item.safety);
+                let result = crate::cleaner::clean_item(item, method);
+                results.push(result);
+            }
+        }
+        self.last_clean_result = Some(results);
+        self.cleanup.checked.clear();
+        // Trigger rescan
+        self.scanning = true;
+        self.tree = None;
+        self.analysis = None;
     }
 
     // -----------------------------------------------------------------------
@@ -295,42 +325,36 @@ impl App {
 // ---------------------------------------------------------------------------
 
 pub fn run(mut terminal: DefaultTerminal, mut app: App) -> std::io::Result<()> {
-    // Start scanning immediately on launch
-    let mut rx = Some(app.start_scan());
+    let mut rx = app.start_scan();
 
     loop {
-        // Draw
-        terminal.draw(|frame| {
-            crate::ui::draw(frame, &app);
-        })?;
+        terminal.draw(|frame| crate::ui::draw(frame, &app))?;
 
-        // Poll scan progress
-        if let Some(receiver) = &rx {
-            match receiver.try_recv() {
+        // Poll for scan progress
+        if app.scanning {
+            match rx.try_recv() {
                 Ok(ScanProgress::Done(tree)) => {
                     app.on_scan_complete(tree);
-                    rx = None;
                 }
-                Ok(ScanProgress::Error(path, msg)) => {
-                    // Log error but keep scanning flag — the Done message
-                    // will eventually arrive (or not).
-                    eprintln!("Scan error at {}: {}", path.display(), msg);
+                Ok(ScanProgress::Error(path, err)) => {
+                    eprintln!("Scan error: {} — {}", path.display(), err);
                 }
-                Ok(ScanProgress::Scanning(_)) | Err(mpsc::TryRecvError::Empty) => {
-                    // still scanning or no new message yet
-                }
+                Ok(ScanProgress::Scanning(_)) => {}
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    // Sender dropped without Done — treat as finished
-                    app.scanning = false;
-                    rx = None;
+                    // Channel dead — need new scan (triggered by cleanup or rescan)
+                    if app.tree.is_none() {
+                        rx = app.start_scan();
+                    }
                 }
+                Err(mpsc::TryRecvError::Empty) => {}
             }
         }
 
-        // Poll keyboard input at ~30fps
         if event::poll(std::time::Duration::from_millis(33))? {
             if let Event::Key(key) = event::read()? {
-                app.on_key(key);
+                if key.kind == crossterm::event::KeyEventKind::Press {
+                    app.on_key(key);
+                }
             }
         }
 
