@@ -1,4 +1,6 @@
 pub mod dev;
+pub mod system;
+pub mod apps;
 
 use crate::tree::FsTree;
 use std::path::PathBuf;
@@ -79,6 +81,8 @@ impl RuleRegistry {
     pub fn with_defaults() -> Self {
         let mut registry = Self::new();
         dev::register(&mut registry);
+        system::register(&mut registry);
+        apps::register(&mut registry);
         registry
     }
 }
