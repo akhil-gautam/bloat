@@ -310,13 +310,7 @@ fn draw_top_consumers(frame: &mut Frame, app: &App, area: Rect) {
     let tree = match &app.tree {
         Some(t) => t,
         None => {
-            frame.render_widget(
-                Paragraph::new(Span::styled(
-                    "  No data yet.",
-                    Style::default().fg(Color::DarkGray),
-                )),
-                chunks[1],
-            );
+            crate::ui::draw_no_data(frame, chunks[1]);
             return;
         }
     };

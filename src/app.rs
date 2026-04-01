@@ -379,7 +379,7 @@ impl App {
                 self.tab = Tab::Logs;
                 return;
             }
-            KeyCode::Char('5') => {
+            KeyCode::Char('s') => {
                 self.tab = Tab::System;
                 return;
             }
@@ -388,14 +388,14 @@ impl App {
                     Tab::Overview => Tab::Explorer,
                     Tab::Explorer => Tab::Cleanup,
                     Tab::Cleanup => Tab::Logs,
-                    Tab::Logs => Tab::System,
-                    Tab::System => Tab::Overview,
+                    Tab::Logs => Tab::Overview,
+                    Tab::System => Tab::Overview, // s toggles in/out
                 };
                 return;
             }
             KeyCode::BackTab => {
                 self.tab = match self.tab {
-                    Tab::Overview => Tab::System,
+                    Tab::Overview => Tab::Logs,
                     Tab::Explorer => Tab::Overview,
                     Tab::Cleanup => Tab::Explorer,
                     Tab::Logs => Tab::Cleanup,
@@ -479,7 +479,7 @@ impl App {
                 // Start scan if anything is selected
                 // This is handled by the run loop checking a flag
             }
-            KeyCode::Char('5') => {
+            KeyCode::Char('s') => {
                 // Go to System tab directly from folder select
                 self.screen = Screen::Main;
                 self.tab = Tab::System;
@@ -893,9 +893,16 @@ pub fn run(mut terminal: DefaultTerminal, mut app: App) -> std::io::Result<()> {
     let mut rx: Option<mpsc::Receiver<ScanProgress>> = None;
 
     loop {
+        // Check quit first — before any auto-start logic
+        if app.should_quit {
+            break;
+        }
+
         // If scanning requested but no active receiver, start a scan.
-        // This handles: 'r' key, post-cleanup rescan, post-delete rescan.
-        if app.scanning && app.tree.is_none() && rx.is_none() {
+        // Only auto-start if not cancelled (cancel sets the flag).
+        if app.scanning && app.tree.is_none() && rx.is_none()
+            && !app.scan_cancel.load(Ordering::Relaxed)
+        {
             rx = Some(app.start_scan());
         }
 
@@ -931,7 +938,6 @@ pub fn run(mut terminal: DefaultTerminal, mut app: App) -> std::io::Result<()> {
                         }
                         Ok(ScanProgress::Error(_, _)) => {}
                         Err(mpsc::TryRecvError::Disconnected) => {
-                            // Scanner thread ended — clear receiver
                             app.scanning = false;
                             rx = None;
                             break;
@@ -957,15 +963,11 @@ pub fn run(mut terminal: DefaultTerminal, mut app: App) -> std::io::Result<()> {
 
                     // If a rescan was requested (cleanup, delete, 'r'),
                     // clear the old receiver so the top-of-loop logic starts a new one.
-                    if app.scanning && app.tree.is_none() {
+                    if app.scanning && app.tree.is_none() && !app.should_quit {
                         rx = None;
                     }
                 }
             }
-        }
-
-        if app.should_quit {
-            break;
         }
     }
 

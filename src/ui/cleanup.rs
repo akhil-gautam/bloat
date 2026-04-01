@@ -32,6 +32,12 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
+    // No tree at all — never scanned
+    if app.tree.is_none() {
+        crate::ui::draw_no_data(frame, area);
+        return;
+    }
+
     // No analysis or empty
     let analysis = match &app.analysis {
         Some(a) if !a.items.is_empty() => a,

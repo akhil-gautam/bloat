@@ -95,7 +95,7 @@ fn draw_folder_select(frame: &mut Frame, app: &App) {
             Span::styled(" all  ", Style::default().fg(Color::Gray)),
             Span::styled("q", Style::default().fg(Color::Red)),
             Span::styled(" quit  ", Style::default().fg(Color::Gray)),
-            Span::styled("5", Style::default().fg(Color::Yellow)),
+            Span::styled("s", Style::default().fg(Color::Yellow)),
             Span::styled(" system monitor", Style::default().fg(Color::Gray)),
         ]),
     ])
@@ -247,13 +247,14 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     tab_spans.push(Span::styled(&log_label, log_style));
     tab_spans.push(Span::raw(" "));
 
-    // System tab
-    let sys_style = if app.tab == Tab::System {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-    tab_spans.push(Span::styled("[5 System]", sys_style));
+    // System tab — accessed via 's', not a numbered tab
+    if app.tab == Tab::System {
+        tab_spans.push(Span::raw(" "));
+        tab_spans.push(Span::styled(
+            "[System]",
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ));
+    }
 
     // Calculate how wide the tab labels are
     let tabs_text: String = tab_spans.iter().map(|s| s.content.to_string()).collect();
@@ -300,8 +301,11 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         Line::from(vec![
             Span::raw(" "),
-            Span::styled("1-5", key),
+            Span::styled("1-4", key),
             Span::styled(": tabs", dim),
+            dot.clone(),
+            Span::styled("s", key),
+            Span::styled(": system", dim),
             dot.clone(),
             Span::styled("r", key),
             Span::styled(": rescan", dim),
@@ -425,6 +429,28 @@ pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(vertical[1])[1]
+}
+
+/// Render a prominent "no data — press r to rescan" message.
+pub fn draw_no_data(frame: &mut Frame, area: Rect) {
+    let lines = vec![
+        Line::from(""),
+        Line::from(""),
+        Line::from(Span::styled(
+            "No scan data available",
+            Style::default().fg(Color::Gray),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Press ", Style::default().fg(Color::Gray)),
+            Span::styled(" r ", Style::default().fg(Color::Yellow).bg(Color::Rgb(60, 60, 60)).add_modifier(Modifier::BOLD)),
+            Span::styled(" to rescan", Style::default().fg(Color::Gray)),
+        ]),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines).alignment(Alignment::Center),
+        area,
+    );
 }
 
 /// Format bytes using human_bytes.

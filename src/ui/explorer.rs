@@ -126,10 +126,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     let tree = match &app.tree {
         Some(t) => t,
         None => {
-            let paragraph = Paragraph::new("No scan data.")
-                .alignment(Alignment::Center)
-                .style(Style::default().fg(Color::DarkGray));
-            frame.render_widget(paragraph, area);
+            crate::ui::draw_no_data(frame, area);
             return;
         }
     };
