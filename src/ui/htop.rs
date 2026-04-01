@@ -1,3 +1,5 @@
+use fuzzy_matcher::FuzzyMatcher;
+use fuzzy_matcher::skim::SkimMatcherV2;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 
@@ -10,17 +12,23 @@ use crate::ui::format_size;
 // ---------------------------------------------------------------------------
 
 pub fn draw(frame: &mut Frame, snap: &SystemSnapshot, state: &SystemTabState, area: Rect) {
-    // Two-row layout: top info panels + bottom process list
+    // If diff mode is active, reserve space for diff panel above process list
+    let diff_height: u16 = if state.show_diff { 5 } else { 0 };
+
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(12),  // Top panels
-            Constraint::Min(8),   // Process list
+            Constraint::Min(12),                  // Top panels
+            Constraint::Length(diff_height),      // Diff overlay (0 when hidden)
+            Constraint::Min(8),                   // Process list
         ])
         .split(area);
 
     draw_top_panels(frame, snap, rows[0]);
-    draw_process_section(frame, snap, state, rows[1]);
+    if state.show_diff {
+        draw_diff_panel(frame, snap, rows[1]);
+    }
+    draw_process_section(frame, snap, state, rows[2]);
 }
 
 // ---------------------------------------------------------------------------
@@ -806,47 +814,38 @@ fn draw_process_section(frame: &mut Frame, snap: &SystemSnapshot, state: &System
         header_area,
     );
 
-    // Build filtered + sorted process list
-    let filter_lower = state.filter.to_lowercase();
-    let mut filtered: Vec<&ProcessInfo> = snap
+    // Build filtered + sorted process list using fuzzy matching
+    let matcher = SkimMatcherV2::default();
+    let mut filtered_with_score: Vec<(i64, &ProcessInfo)> = snap
         .processes
         .iter()
-        .filter(|p| {
-            filter_lower.is_empty() || p.name.to_lowercase().contains(&filter_lower)
+        .filter_map(|p| {
+            if state.filter.is_empty() {
+                Some((0i64, p))
+            } else {
+                matcher.fuzzy_match(&p.name, &state.filter).map(|score| (score, p))
+            }
         })
         .collect();
 
-    // Sort
-    match state.sort_by {
-        ProcessSort::Cpu => filtered.sort_by(|a, b| {
-            if state.sort_ascending {
-                a.cpu_percent.partial_cmp(&b.cpu_percent).unwrap_or(std::cmp::Ordering::Equal)
-            } else {
-                b.cpu_percent.partial_cmp(&a.cpu_percent).unwrap_or(std::cmp::Ordering::Equal)
+    // When filter is active, sort by fuzzy score (best match first) as primary key.
+    // Then apply user's selected sort as secondary (or primary when no filter).
+    if !state.filter.is_empty() {
+        // Primary: fuzzy score descending; secondary: user sort
+        filtered_with_score.sort_by(|(score_a, a), (score_b, b)| {
+            let score_cmp = score_b.cmp(score_a); // higher score = better match
+            if score_cmp != std::cmp::Ordering::Equal {
+                return score_cmp;
             }
-        }),
-        ProcessSort::Mem => filtered.sort_by(|a, b| {
-            if state.sort_ascending {
-                a.mem_bytes.cmp(&b.mem_bytes)
-            } else {
-                b.mem_bytes.cmp(&a.mem_bytes)
-            }
-        }),
-        ProcessSort::Pid => filtered.sort_by(|a, b| {
-            if state.sort_ascending {
-                a.pid.cmp(&b.pid)
-            } else {
-                b.pid.cmp(&a.pid)
-            }
-        }),
-        ProcessSort::Name => filtered.sort_by(|a, b| {
-            if state.sort_ascending {
-                a.name.cmp(&b.name)
-            } else {
-                b.name.cmp(&a.name)
-            }
-        }),
+            // Tiebreak by user sort
+            secondary_sort_cmp(a, b, state)
+        });
+    } else {
+        // No filter: sort purely by user selection
+        filtered_with_score.sort_by(|(_, a), (_, b)| secondary_sort_cmp(a, b, state));
     }
+
+    let filtered: Vec<&ProcessInfo> = filtered_with_score.into_iter().map(|(_, p)| p).collect();
 
     let max_rows = list_area.height as usize;
     let cmd_max = if wide {
@@ -919,6 +918,111 @@ fn draw_process_section(frame: &mut Frame, snap: &SystemSnapshot, state: &System
         .collect();
 
     frame.render_widget(List::new(items), list_area);
+}
+
+/// Compare two processes according to the user's selected sort key.
+fn secondary_sort_cmp(a: &ProcessInfo, b: &ProcessInfo, state: &SystemTabState) -> std::cmp::Ordering {
+    match state.sort_by {
+        ProcessSort::Cpu => {
+            if state.sort_ascending {
+                a.cpu_percent.partial_cmp(&b.cpu_percent).unwrap_or(std::cmp::Ordering::Equal)
+            } else {
+                b.cpu_percent.partial_cmp(&a.cpu_percent).unwrap_or(std::cmp::Ordering::Equal)
+            }
+        }
+        ProcessSort::Mem => {
+            if state.sort_ascending {
+                a.mem_bytes.cmp(&b.mem_bytes)
+            } else {
+                b.mem_bytes.cmp(&a.mem_bytes)
+            }
+        }
+        ProcessSort::Pid => {
+            if state.sort_ascending {
+                a.pid.cmp(&b.pid)
+            } else {
+                b.pid.cmp(&a.pid)
+            }
+        }
+        ProcessSort::Name => {
+            if state.sort_ascending {
+                a.name.cmp(&b.name)
+            } else {
+                b.name.cmp(&a.name)
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Diff panel
+// ---------------------------------------------------------------------------
+
+fn draw_diff_panel(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Process Diff (last 5s) — [d] to toggle ")
+        .title_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height == 0 {
+        return;
+    }
+
+    let diff = &snap.process_diff;
+    let mut lines: Vec<Line> = Vec::new();
+
+    // NEW processes (green)
+    if !diff.new_pids.is_empty() {
+        let names: Vec<String> = diff
+            .new_pids
+            .iter()
+            .take(6)
+            .map(|(pid, name)| format!("{} (PID {})", name, pid))
+            .collect();
+        lines.push(Line::from(vec![
+            Span::styled("NEW:    ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::styled(names.join(", "), Style::default().fg(Color::Green)),
+        ]));
+    }
+
+    // EXITED processes (red)
+    if !diff.exited_pids.is_empty() {
+        let names: Vec<String> = diff
+            .exited_pids
+            .iter()
+            .take(6)
+            .map(|(pid, name)| format!("{} (PID {})", name, pid))
+            .collect();
+        lines.push(Line::from(vec![
+            Span::styled("EXITED: ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            Span::styled(names.join(", "), Style::default().fg(Color::Red)),
+        ]));
+    }
+
+    // CPU SPIKES (yellow)
+    if !diff.cpu_spikes.is_empty() {
+        let names: Vec<String> = diff
+            .cpu_spikes
+            .iter()
+            .take(4)
+            .map(|(_, name, delta)| format!("{} +{:.1}% CPU", name, delta))
+            .collect();
+        lines.push(Line::from(vec![
+            Span::styled("SPIKE:  ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(names.join(", "), Style::default().fg(Color::Yellow)),
+        ]));
+    }
+
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "No changes detected (refreshes every 5s)",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn build_header(state: &SystemTabState, wide: bool) -> Line<'static> {

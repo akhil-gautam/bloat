@@ -4,6 +4,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use fuzzy_matcher::FuzzyMatcher;
+use fuzzy_matcher::skim::SkimMatcherV2;
 use ratatui::DefaultTerminal;
 
 use crate::analyzer::{self, AnalysisResult};
@@ -50,6 +52,7 @@ pub struct SystemTabState {
     pub filter_active: bool,
     pub selected_process: usize,
     pub confirm_kill: bool,
+    pub show_diff: bool,
 }
 
 impl SystemTabState {
@@ -61,6 +64,7 @@ impl SystemTabState {
             filter_active: false,
             selected_process: 0,
             confirm_kill: false,
+            show_diff: false,
         }
     }
 }
@@ -729,6 +733,10 @@ impl App {
             KeyCode::Char('/') => {
                 self.system_tab.filter_active = true;
             }
+            // Toggle diff mode
+            KeyCode::Char('d') => {
+                self.system_tab.show_diff = !self.system_tab.show_diff;
+            }
             // Process navigation
             KeyCode::Char('j') | KeyCode::Down => {
                 let count = self.filtered_process_count();
@@ -756,10 +764,10 @@ impl App {
             if self.system_tab.filter.is_empty() {
                 snap.processes.len()
             } else {
-                let filter_lower = self.system_tab.filter.to_lowercase();
+                let matcher = SkimMatcherV2::default();
                 snap.processes
                     .iter()
-                    .filter(|p| p.name.to_lowercase().contains(&filter_lower))
+                    .filter(|p| matcher.fuzzy_match(&p.name, &self.system_tab.filter).is_some())
                     .count()
             }
         } else {
@@ -769,14 +777,19 @@ impl App {
 
     fn kill_selected_process(&mut self) {
         let pid = if let Some(ref snap) = self.sys_snapshot {
-            let filter_lower = self.system_tab.filter.to_lowercase();
-            let filtered: Vec<_> = if filter_lower.is_empty() {
+            let filtered: Vec<_> = if self.system_tab.filter.is_empty() {
                 snap.processes.iter().collect()
             } else {
-                snap.processes
+                let matcher = SkimMatcherV2::default();
+                let mut scored: Vec<_> = snap.processes
                     .iter()
-                    .filter(|p| p.name.to_lowercase().contains(&filter_lower))
-                    .collect()
+                    .filter_map(|p| {
+                        matcher.fuzzy_match(&p.name, &self.system_tab.filter)
+                            .map(|score| (score, p))
+                    })
+                    .collect();
+                scored.sort_by(|a, b| b.0.cmp(&a.0));
+                scored.into_iter().map(|(_, p)| p).collect()
             };
             filtered
                 .get(self.system_tab.selected_process)

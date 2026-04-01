@@ -88,6 +88,14 @@ pub struct ConnectionInfo {
     pub protocol: String,
 }
 
+/// Process diff — what changed since the last 5-second diff window.
+#[derive(Clone, Debug, Default)]
+pub struct ProcessDiff {
+    pub new_pids: Vec<(u32, String)>,           // (pid, name) — new since last diff
+    pub exited_pids: Vec<(u32, String)>,         // (pid, name) — gone since last diff
+    pub cpu_spikes: Vec<(u32, String, f32)>,     // (pid, name, delta%) — CPU jumped >20%
+}
+
 /// Per-process information.
 #[derive(Clone, Debug)]
 pub struct ProcessInfo {
@@ -139,6 +147,9 @@ pub struct SystemSnapshot {
 
     // Processes
     pub processes: Vec<ProcessInfo>,
+
+    // Process diff (updated every 5 seconds)
+    pub process_diff: ProcessDiff,
 }
 
 // ---------------------------------------------------------------------------
@@ -170,6 +181,11 @@ pub struct SystemMonitor {
     cached_gpu: Option<GpuInfo>,
     cached_net_apps: Vec<NetAppInfo>,
     last_slow_refresh: Instant,
+
+    // Process diff tracking
+    prev_process_snapshot: HashMap<u32, (String, f32)>,  // pid -> (name, cpu%)
+    last_diff_time: Instant,
+    cached_process_diff: ProcessDiff,
 }
 
 impl SystemMonitor {
@@ -192,6 +208,9 @@ impl SystemMonitor {
         disks.refresh(true);
 
         let now = Instant::now();
+        let old_time = now
+            .checked_sub(std::time::Duration::from_secs(10))
+            .unwrap_or(now);
         Self {
             sys,
             users,
@@ -208,9 +227,10 @@ impl SystemMonitor {
             cached_mem_breakdown: None,
             cached_gpu: None,
             cached_net_apps: Vec::new(),
-            last_slow_refresh: Instant::now()
-                .checked_sub(std::time::Duration::from_secs(10))
-                .unwrap_or(now),
+            last_slow_refresh: old_time,
+            prev_process_snapshot: HashMap::new(),
+            last_diff_time: old_time,
+            cached_process_diff: ProcessDiff::default(),
         }
     }
 
@@ -314,6 +334,51 @@ impl SystemMonitor {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
+        // Process diff — recompute every 5 seconds
+        if self.last_diff_time.elapsed() >= std::time::Duration::from_secs(5) {
+            let current_snapshot: HashMap<u32, (String, f32)> = processes
+                .iter()
+                .map(|p| (p.pid, (p.name.clone(), p.cpu_percent)))
+                .collect();
+
+            let mut diff = ProcessDiff::default();
+
+            if !self.prev_process_snapshot.is_empty() {
+                // New pids: in current but not in previous
+                for (&pid, (name, _)) in &current_snapshot {
+                    if !self.prev_process_snapshot.contains_key(&pid) {
+                        diff.new_pids.push((pid, name.clone()));
+                    }
+                }
+
+                // Exited pids: in previous but not in current
+                for (&pid, (name, _)) in &self.prev_process_snapshot {
+                    if !current_snapshot.contains_key(&pid) {
+                        diff.exited_pids.push((pid, name.clone()));
+                    }
+                }
+
+                // CPU spikes: process exists in both and CPU jumped >20%
+                for (&pid, (name, prev_cpu)) in &self.prev_process_snapshot {
+                    if let Some((_, curr_cpu)) = current_snapshot.get(&pid) {
+                        let delta = curr_cpu - prev_cpu;
+                        if delta > 20.0 {
+                            diff.cpu_spikes.push((pid, name.clone(), delta));
+                        }
+                    }
+                }
+
+                // Sort spikes by delta descending
+                diff.cpu_spikes.sort_by(|a, b| {
+                    b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal)
+                });
+            }
+
+            self.prev_process_snapshot = current_snapshot;
+            self.last_diff_time = Instant::now();
+            self.cached_process_diff = diff;
+        }
+
         // Network
         let elapsed_net = now.duration_since(self.prev_net_time).as_secs_f64().max(0.001);
         let network = self.compute_network(elapsed_net);
@@ -389,6 +454,7 @@ impl SystemMonitor {
             gpu: self.cached_gpu.clone(),
             net_apps: self.cached_net_apps.clone(),
             processes,
+            process_diff: self.cached_process_diff.clone(),
         }
     }
 
