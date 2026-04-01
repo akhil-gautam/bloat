@@ -909,6 +909,7 @@ fn draw_process_section(frame: &mut Frame, snap: &SystemSnapshot, state: &System
                 ));
             }
 
+            spans.push(Span::styled("  ", Style::default().bg(bg)));
             spans.push(Span::styled(name_display, Style::default().fg(Color::White).bg(bg)));
 
             ListItem::new(Line::from(spans))
