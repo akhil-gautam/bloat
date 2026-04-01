@@ -324,64 +324,104 @@ fn draw_cpu_sparkline(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
         return;
     }
 
-    // Use blocks where ▂ is minimum for any non-zero value (▁ is invisible on dark bg)
     let blocks = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-    let history = &snap.cpu_history;
 
-    let label = "Hist: ";
-    let label_len = label.len();
-    let chart_width = (area.width as usize).saturating_sub(label_len);
-
-    if chart_width == 0 {
-        return;
-    }
-
-    // Build sparkline characters from history
     let value_to_block = |v: f32| -> char {
         if v < 0.5 {
-            '·' // near-zero shown as dot
+            '·'
         } else {
-            // Map 0.5-100 to indices 1-7 (skip index 0 = ▁ which is invisible)
             let idx = ((v / 100.0) * 6.0 + 1.0).min(7.0) as usize;
             blocks[idx]
         }
     };
 
-    let mut chart_chars: Vec<Span> = Vec::new();
-
-    // Pad with dots for empty slots at the start
-    let data_count = history.len().min(chart_width);
-    let pad_count = chart_width.saturating_sub(data_count);
-    if pad_count > 0 {
-        chart_chars.push(Span::styled(
-            "·".repeat(pad_count),
-            Style::default().fg(Color::Rgb(50, 50, 50)),
-        ));
+    // Find the 4 hottest cores by their latest usage
+    let per_core = &snap.cpu_per_core_history;
+    if per_core.is_empty() {
+        // Fallback: render total CPU history
+        let history = &snap.cpu_history;
+        let label = "Hist: ";
+        let label_len = label.len();
+        let chart_width = (area.width as usize).saturating_sub(label_len);
+        if chart_width == 0 {
+            return;
+        }
+        let mut chart_chars: Vec<Span> = Vec::new();
+        let data_count = history.len().min(chart_width);
+        let pad_count = chart_width.saturating_sub(data_count);
+        if pad_count > 0 {
+            chart_chars.push(Span::styled(
+                "·".repeat(pad_count),
+                Style::default().fg(Color::Rgb(50, 50, 50)),
+            ));
+        }
+        let start = history.len().saturating_sub(chart_width);
+        for &v in &history[start..] {
+            let ch = value_to_block(v);
+            let color = if v > 80.0 { Color::Red } else if v > 50.0 { Color::Yellow } else { Color::Green };
+            chart_chars.push(Span::styled(ch.to_string(), Style::default().fg(color)));
+        }
+        let mut spans = vec![Span::styled(label, Style::default().fg(Color::Cyan))];
+        spans.extend(chart_chars);
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
+        return;
     }
 
-    // Render actual data points
-    let start = if history.len() > chart_width {
-        history.len() - chart_width
-    } else {
-        0
-    };
-    for &v in &history[start..] {
-        let ch = value_to_block(v);
-        let color = if v > 80.0 {
-            Color::Red
-        } else if v > 50.0 {
-            Color::Yellow
-        } else {
-            Color::Green
-        };
-        chart_chars.push(Span::styled(
-            ch.to_string(),
-            Style::default().fg(color),
-        ));
+    // Pick up to 4 hottest cores (by latest value)
+    let mut indexed: Vec<(usize, f32)> = per_core
+        .iter()
+        .enumerate()
+        .map(|(i, hist)| (i, hist.last().copied().unwrap_or(0.0)))
+        .collect();
+    indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let hot_cores: Vec<usize> = indexed.iter().take(4).map(|(i, _)| *i).collect();
+
+    // Each core gets: "C00:▂▃▅  " — label(4) + sparkline(~12) + gap(2)
+    // We'll show up to 4 in one line if width allows
+    let core_label_width = 4usize; // "C00:"
+    let gap = 2usize;
+    let total_cores = hot_cores.len();
+    if total_cores == 0 {
+        return;
     }
 
-    let mut spans = vec![Span::styled(label, Style::default().fg(Color::Cyan))];
-    spans.extend(chart_chars);
+    // Calculate how many chars each sparkline gets
+    let available = area.width as usize;
+    let per_core_total = available / total_cores.max(1);
+    let sparkline_width = per_core_total.saturating_sub(core_label_width + gap).max(4);
+
+    let mut spans: Vec<Span> = Vec::new();
+
+    for (slot, &core_idx) in hot_cores.iter().enumerate() {
+        let hist = &per_core[core_idx];
+
+        // Core label
+        spans.push(Span::styled(
+            format!("C{:02}:", core_idx),
+            Style::default().fg(Color::Cyan),
+        ));
+
+        // Sparkline chars
+        let data_count = hist.len().min(sparkline_width);
+        let pad_count = sparkline_width.saturating_sub(data_count);
+        if pad_count > 0 {
+            spans.push(Span::styled(
+                "·".repeat(pad_count),
+                Style::default().fg(Color::Rgb(50, 50, 50)),
+            ));
+        }
+        let start = hist.len().saturating_sub(sparkline_width);
+        for &v in &hist[start..] {
+            let ch = value_to_block(v);
+            let color = if v > 80.0 { Color::Red } else if v > 50.0 { Color::Yellow } else { Color::Green };
+            spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
+        }
+
+        // Gap between cores (not after last)
+        if slot + 1 < total_cores {
+            spans.push(Span::raw("  "));
+        }
+    }
 
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
@@ -405,57 +445,41 @@ fn draw_memory_section(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // RAM bar
-            Constraint::Length(1), // Memory breakdown
+            Constraint::Length(1), // Segmented RAM bar
+            Constraint::Length(1), // Memory breakdown compact text
+            Constraint::Length(1), // Memory pressure indicator
             Constraint::Length(1), // Swap + load
             Constraint::Length(1), // Tasks/threads + uptime
         ])
         .split(inner);
 
-    // RAM bar
-    let mem_pct = if snap.mem_total > 0 {
-        snap.mem_used as f64 / snap.mem_total as f64
-    } else {
-        0.0
-    };
-    let ram_color = if mem_pct > 0.9 {
-        Color::Red
-    } else if mem_pct > 0.7 {
-        Color::Yellow
-    } else {
-        Color::Green
-    };
-    draw_resource_bar(
-        frame,
-        "RAM",
-        mem_pct,
-        &format!("{} / {}", format_size(snap.mem_used), format_size(snap.mem_total)),
-        ram_color,
-        rows[0],
-    );
+    // Row 0: Segmented RAM bar (wired=red, active=yellow, compressed=magenta, inactive=darkgray, free=empty)
+    if rows[0].y < inner.y + inner.height {
+        draw_segmented_mem_bar(frame, snap, rows[0]);
+    }
 
-    // Memory breakdown
+    // Row 1: Compact memory breakdown text
     if rows[1].y < inner.y + inner.height {
         if let Some(ref bd) = snap.mem_breakdown {
             let line = Line::from(vec![
-                Span::styled("  wired:", Style::default().fg(Color::Cyan)),
+                Span::styled(" wired:", Style::default().fg(Color::Red)),
                 Span::styled(
-                    format!("{} ", format_size(bd.wired)),
+                    format!("{}  ", format_size(bd.wired)),
                     Style::default().fg(Color::White),
                 ),
-                Span::styled("actv:", Style::default().fg(Color::Cyan)),
+                Span::styled("active:", Style::default().fg(Color::Yellow)),
                 Span::styled(
-                    format!("{} ", format_size(bd.active)),
+                    format!("{}  ", format_size(bd.active)),
                     Style::default().fg(Color::White),
                 ),
-                Span::styled("inact:", Style::default().fg(Color::Cyan)),
+                Span::styled("compr:", Style::default().fg(Color::Magenta)),
                 Span::styled(
-                    format!("{} ", format_size(bd.inactive)),
+                    format!("{}  ", format_size(bd.compressed)),
                     Style::default().fg(Color::White),
                 ),
-                Span::styled("comp:", Style::default().fg(Color::Cyan)),
+                Span::styled("inact:", Style::default().fg(Color::DarkGray)),
                 Span::styled(
-                    format_size(bd.compressed),
+                    format_size(bd.inactive),
                     Style::default().fg(Color::White),
                 ),
             ]);
@@ -463,15 +487,48 @@ fn draw_memory_section(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
         }
     }
 
-    // Swap + load
-    if rows.len() > 2 && rows[2].y < inner.y + inner.height {
+    // Row 2: Memory pressure indicator
+    if rows[2].y < inner.y + inner.height {
+        let level = snap.mem_pressure_level;
+        let pressure_line = if level > 50 {
+            Line::from(vec![
+                Span::styled(" Pressure: ", Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    format!("Normal ({}%)", level),
+                    Style::default().fg(Color::Green),
+                ),
+            ])
+        } else if level >= 25 {
+            Line::from(vec![
+                Span::styled(" Pressure: ", Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    format!("Warning ({}%)", level),
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                ),
+            ])
+        } else {
+            Line::from(vec![
+                Span::styled(" Pressure: ", Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    format!("CRITICAL ({}%)", level),
+                    Style::default()
+                        .fg(Color::Red)
+                        .add_modifier(Modifier::BOLD | Modifier::RAPID_BLINK),
+                ),
+            ])
+        };
+        frame.render_widget(Paragraph::new(pressure_line), rows[2]);
+    }
+
+    // Row 3: Swap + load
+    if rows.len() > 3 && rows[3].y < inner.y + inner.height {
         let swap_pct = if snap.swap_total > 0 {
             snap.swap_used as f64 / snap.swap_total as f64
         } else {
             0.0
         };
         let line = Line::from(vec![
-            Span::styled("  Swp ", Style::default().fg(Color::Cyan)),
+            Span::styled(" Swp ", Style::default().fg(Color::Cyan)),
             Span::styled(
                 format!("{}/{}", format_size(snap.swap_used), format_size(snap.swap_total)),
                 Style::default().fg(if swap_pct > 0.5 { Color::Yellow } else { Color::Green }),
@@ -482,15 +539,15 @@ fn draw_memory_section(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
                 Style::default().fg(Color::White),
             ),
         ]);
-        frame.render_widget(Paragraph::new(line), rows[2]);
+        frame.render_widget(Paragraph::new(line), rows[3]);
     }
 
-    // Tasks + threads + uptime
-    if rows.len() > 3 && rows[3].y < inner.y + inner.height {
+    // Row 4: Tasks + threads + uptime
+    if rows.len() > 4 && rows[4].y < inner.y + inner.height {
         let hours = snap.uptime / 3600;
         let mins = (snap.uptime % 3600) / 60;
         let line = Line::from(vec![
-            Span::styled("  Tasks:", Style::default().fg(Color::Cyan)),
+            Span::styled(" Tasks:", Style::default().fg(Color::Cyan)),
             Span::styled(
                 format!("{} ", snap.total_processes),
                 Style::default().fg(Color::White),
@@ -506,8 +563,86 @@ fn draw_memory_section(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
                 Style::default().fg(Color::White),
             ),
         ]);
-        frame.render_widget(Paragraph::new(line), rows[3]);
+        frame.render_widget(Paragraph::new(line), rows[4]);
     }
+}
+
+/// Draw a segmented memory bar showing wired/active/compressed/inactive/free portions.
+fn draw_segmented_mem_bar(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
+    if area.width == 0 || snap.mem_total == 0 {
+        return;
+    }
+
+    let label = "RAM ";
+    let label_width = label.len();
+    let suffix = format!(" {}/{}", format_size(snap.mem_used), format_size(snap.mem_total));
+    let suffix_width = suffix.len();
+    let bar_width = (area.width as usize).saturating_sub(label_width + suffix_width);
+
+    if bar_width == 0 {
+        return;
+    }
+
+    let total = snap.mem_total as f64;
+    let (wired_w, active_w, compressed_w, inactive_w) = if let Some(ref bd) = snap.mem_breakdown {
+        let wired_w = ((bd.wired as f64 / total) * bar_width as f64).round() as usize;
+        let active_w = ((bd.active as f64 / total) * bar_width as f64).round() as usize;
+        let compressed_w = ((bd.compressed as f64 / total) * bar_width as f64).round() as usize;
+        let inactive_w = ((bd.inactive as f64 / total) * bar_width as f64).round() as usize;
+        (wired_w, active_w, compressed_w, inactive_w)
+    } else {
+        // Fallback: single color bar using mem_used
+        let used_w = ((snap.mem_used as f64 / total) * bar_width as f64).round() as usize;
+        let empty_w = bar_width.saturating_sub(used_w);
+        let mem_pct = snap.mem_used as f64 / total;
+        let color = if mem_pct > 0.9 { Color::Red } else if mem_pct > 0.7 { Color::Yellow } else { Color::Green };
+        let mut spans = vec![Span::styled(label, Style::default().fg(Color::Cyan))];
+        spans.push(Span::styled("█".repeat(used_w), Style::default().fg(color)));
+        spans.push(Span::styled("░".repeat(empty_w), Style::default().fg(Color::Rgb(50, 50, 50))));
+        spans.push(Span::styled(suffix, Style::default().fg(color)));
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
+        return;
+    };
+
+    // Clamp so segments don't overflow bar_width
+    let used_w = wired_w + active_w + compressed_w + inactive_w;
+    let (wired_w, active_w, compressed_w, inactive_w) = if used_w > bar_width {
+        let scale = bar_width as f64 / used_w as f64;
+        (
+            (wired_w as f64 * scale) as usize,
+            (active_w as f64 * scale) as usize,
+            (compressed_w as f64 * scale) as usize,
+            (inactive_w as f64 * scale) as usize,
+        )
+    } else {
+        (wired_w, active_w, compressed_w, inactive_w)
+    };
+
+    let filled = wired_w + active_w + compressed_w + inactive_w;
+    let free_w = bar_width.saturating_sub(filled);
+
+    let mem_pct = snap.mem_used as f64 / total;
+    let summary_color = if mem_pct > 0.9 { Color::Red } else if mem_pct > 0.7 { Color::Yellow } else { Color::Green };
+
+    let mut spans = vec![Span::styled(label, Style::default().fg(Color::Cyan))];
+    if wired_w > 0 {
+        spans.push(Span::styled("█".repeat(wired_w), Style::default().fg(Color::Red)));
+    }
+    if active_w > 0 {
+        spans.push(Span::styled("█".repeat(active_w), Style::default().fg(Color::Yellow)));
+    }
+    if compressed_w > 0 {
+        spans.push(Span::styled("█".repeat(compressed_w), Style::default().fg(Color::Magenta)));
+    }
+    if inactive_w > 0 {
+        spans.push(Span::styled("█".repeat(inactive_w), Style::default().fg(Color::Rgb(80, 80, 80))));
+    }
+    if free_w > 0 {
+        spans.push(Span::styled("░".repeat(free_w), Style::default().fg(Color::Rgb(50, 50, 50))));
+    }
+    spans.push(Span::styled(suffix, Style::default().fg(summary_color)));
+
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 // ---------------------------------------------------------------------------

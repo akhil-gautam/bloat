@@ -2,7 +2,7 @@ use sysinfo::{
     CpuRefreshKind, Disks, MemoryRefreshKind, Networks, ProcessRefreshKind, RefreshKind, System,
     Users,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
 // ---------------------------------------------------------------------------
@@ -116,6 +116,7 @@ pub struct SystemSnapshot {
     pub cpu_usage_total: f32,
     pub cpu_temp: Option<f32>,
     pub cpu_history: Vec<f32>,
+    pub cpu_per_core_history: Vec<Vec<f32>>,
 
     // Memory
     pub mem_total: u64,
@@ -123,6 +124,7 @@ pub struct SystemSnapshot {
     pub swap_total: u64,
     pub swap_used: u64,
     pub mem_breakdown: Option<MemoryBreakdown>,
+    pub mem_pressure_level: u8,
 
     // System
     pub load_avg: (f64, f64, f64),
@@ -176,9 +178,13 @@ pub struct SystemMonitor {
     // CPU history (last 60 total CPU readings)
     cpu_history: Vec<f32>,
 
+    // Per-core CPU history (last 60 readings per core)
+    per_core_history: Vec<VecDeque<f32>>,
+
     // Cached slow data (refreshed every few seconds)
     cached_battery: Option<BatteryInfo>,
     cached_mem_breakdown: Option<MemoryBreakdown>,
+    cached_mem_pressure_level: u8,
     cached_gpu: Option<GpuInfo>,
     cached_net_apps: Vec<NetAppInfo>,
     last_slow_refresh: Instant,
@@ -224,8 +230,10 @@ impl SystemMonitor {
             prev_disk_write: 0,
             prev_disk_time: now,
             cpu_history: Vec::new(),
+            per_core_history: Vec::new(),
             cached_battery: None,
             cached_mem_breakdown: None,
+            cached_mem_pressure_level: 100,
             cached_gpu: None,
             cached_net_apps: Vec::new(),
             last_slow_refresh: old_time,
@@ -252,6 +260,12 @@ impl SystemMonitor {
         if self.last_slow_refresh.elapsed() >= std::time::Duration::from_secs(5) {
             self.cached_battery = parse_battery();
             self.cached_mem_breakdown = parse_vm_stat();
+            self.cached_mem_pressure_level = std::process::Command::new("sysctl")
+                .args(["-n", "kern.memorystatus_level"])
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u8>().ok())
+                .unwrap_or(100); // 100 = no pressure
             self.cached_gpu = parse_gpu_info();
             self.cached_net_apps = parse_net_apps();
             self.last_slow_refresh = Instant::now();
@@ -277,6 +291,22 @@ impl SystemMonitor {
         if self.cpu_history.len() > 60 {
             self.cpu_history.remove(0);
         }
+
+        // Per-core CPU history
+        while self.per_core_history.len() < cpu_usage_per_core.len() {
+            self.per_core_history.push(VecDeque::new());
+        }
+        for (i, core) in cpu_usage_per_core.iter().enumerate() {
+            self.per_core_history[i].push_back(core.usage);
+            if self.per_core_history[i].len() > 60 {
+                self.per_core_history[i].pop_front();
+            }
+        }
+        let cpu_per_core_history: Vec<Vec<f32>> = self
+            .per_core_history
+            .iter()
+            .map(|dq| dq.iter().copied().collect())
+            .collect();
 
         // CPU temperature via sysinfo Components (best-effort)
         let cpu_temp = get_cpu_temp_sysctl();
@@ -440,11 +470,13 @@ impl SystemMonitor {
             cpu_usage_total,
             cpu_temp,
             cpu_history: self.cpu_history.clone(),
+            cpu_per_core_history,
             mem_total,
             mem_used,
             swap_total,
             swap_used,
             mem_breakdown: self.cached_mem_breakdown.clone(),
+            mem_pressure_level: self.cached_mem_pressure_level,
             load_avg,
             uptime,
             total_processes,
