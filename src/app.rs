@@ -32,6 +32,40 @@ pub enum Tab {
 }
 
 // ---------------------------------------------------------------------------
+// SystemTabState
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ProcessSort {
+    Cpu,
+    Mem,
+    Pid,
+    Name,
+}
+
+pub struct SystemTabState {
+    pub sort_by: ProcessSort,
+    pub sort_ascending: bool,
+    pub filter: String,
+    pub filter_active: bool,
+    pub selected_process: usize,
+    pub confirm_kill: bool,
+}
+
+impl SystemTabState {
+    pub fn new() -> Self {
+        Self {
+            sort_by: ProcessSort::Cpu,
+            sort_ascending: false,
+            filter: String::new(),
+            filter_active: false,
+            selected_process: 0,
+            confirm_kill: false,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // OverviewState
 // ---------------------------------------------------------------------------
 
@@ -205,6 +239,7 @@ pub struct App {
     pub logs: Vec<LogEntry>,
     pub sys_monitor: crate::system_monitor::SystemMonitor,
     pub sys_snapshot: Option<crate::system_monitor::SystemSnapshot>,
+    pub system_tab: SystemTabState,
 }
 
 impl App {
@@ -231,6 +266,7 @@ impl App {
             logs: Vec::new(),
             sys_monitor: crate::system_monitor::SystemMonitor::new(),
             sys_snapshot: None,
+            system_tab: SystemTabState::new(),
         }
     }
 
@@ -300,10 +336,19 @@ impl App {
             return;
         }
 
-        // Esc cancels scan or goes back to folder select from System tab
+        // Esc cancels scan or exits filter mode or goes back to folder select from System tab
         if key.code == KeyCode::Esc {
             if self.scanning {
                 self.cancel_scan();
+                return;
+            }
+            // If filter is active on System tab, Esc closes it
+            if self.tab == Tab::System && self.system_tab.filter_active {
+                self.system_tab.filter_active = false;
+                return;
+            }
+            if self.tab == Tab::System && self.system_tab.confirm_kill {
+                self.system_tab.confirm_kill = false;
                 return;
             }
             if self.tab == Tab::System && self.tree.is_none() {
@@ -381,7 +426,7 @@ impl App {
             Tab::Explorer => self.on_key_explorer(key),
             Tab::Cleanup => self.on_key_cleanup(key),
             Tab::Logs => {}    // read-only
-            Tab::System => {}  // auto-refreshing, read-only
+            Tab::System => self.on_key_system(key),
         }
     }
 
@@ -607,6 +652,143 @@ impl App {
                 self.execute_cleanup();
             }
             _ => {}
+        }
+    }
+
+    fn on_key_system(&mut self, key: KeyEvent) {
+        // Confirm kill prompt
+        if self.system_tab.confirm_kill {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    self.system_tab.confirm_kill = false;
+                    self.kill_selected_process();
+                }
+                _ => {
+                    self.system_tab.confirm_kill = false;
+                }
+            }
+            return;
+        }
+
+        // Filter mode: typing inputs get captured
+        if self.system_tab.filter_active {
+            match key.code {
+                KeyCode::Esc => {
+                    self.system_tab.filter_active = false;
+                }
+                KeyCode::Enter => {
+                    self.system_tab.filter_active = false;
+                }
+                KeyCode::Backspace => {
+                    self.system_tab.filter.pop();
+                }
+                KeyCode::Char(c) => {
+                    self.system_tab.filter.push(c);
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // Normal mode key handling
+        match key.code {
+            // Sort keys
+            KeyCode::Char('c') => {
+                if self.system_tab.sort_by == ProcessSort::Cpu {
+                    self.system_tab.sort_ascending = !self.system_tab.sort_ascending;
+                } else {
+                    self.system_tab.sort_by = ProcessSort::Cpu;
+                    self.system_tab.sort_ascending = false;
+                }
+            }
+            KeyCode::Char('m') => {
+                if self.system_tab.sort_by == ProcessSort::Mem {
+                    self.system_tab.sort_ascending = !self.system_tab.sort_ascending;
+                } else {
+                    self.system_tab.sort_by = ProcessSort::Mem;
+                    self.system_tab.sort_ascending = false;
+                }
+            }
+            KeyCode::Char('p') => {
+                if self.system_tab.sort_by == ProcessSort::Pid {
+                    self.system_tab.sort_ascending = !self.system_tab.sort_ascending;
+                } else {
+                    self.system_tab.sort_by = ProcessSort::Pid;
+                    self.system_tab.sort_ascending = true;
+                }
+            }
+            KeyCode::Char('n') => {
+                if self.system_tab.sort_by == ProcessSort::Name {
+                    self.system_tab.sort_ascending = !self.system_tab.sort_ascending;
+                } else {
+                    self.system_tab.sort_by = ProcessSort::Name;
+                    self.system_tab.sort_ascending = true;
+                }
+            }
+            // Filter
+            KeyCode::Char('/') => {
+                self.system_tab.filter_active = true;
+            }
+            // Process navigation
+            KeyCode::Char('j') | KeyCode::Down => {
+                let count = self.filtered_process_count();
+                if count > 0 && self.system_tab.selected_process + 1 < count {
+                    self.system_tab.selected_process += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if self.system_tab.selected_process > 0 {
+                    self.system_tab.selected_process -= 1;
+                }
+            }
+            // Kill process
+            KeyCode::Char('K') => {
+                if self.filtered_process_count() > 0 {
+                    self.system_tab.confirm_kill = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn filtered_process_count(&self) -> usize {
+        if let Some(ref snap) = self.sys_snapshot {
+            if self.system_tab.filter.is_empty() {
+                snap.processes.len()
+            } else {
+                let filter_lower = self.system_tab.filter.to_lowercase();
+                snap.processes
+                    .iter()
+                    .filter(|p| p.name.to_lowercase().contains(&filter_lower))
+                    .count()
+            }
+        } else {
+            0
+        }
+    }
+
+    fn kill_selected_process(&mut self) {
+        let pid = if let Some(ref snap) = self.sys_snapshot {
+            let filter_lower = self.system_tab.filter.to_lowercase();
+            let filtered: Vec<_> = if filter_lower.is_empty() {
+                snap.processes.iter().collect()
+            } else {
+                snap.processes
+                    .iter()
+                    .filter(|p| p.name.to_lowercase().contains(&filter_lower))
+                    .collect()
+            };
+            filtered
+                .get(self.system_tab.selected_process)
+                .map(|p| p.pid)
+        } else {
+            None
+        };
+
+        if let Some(pid) = pid {
+            let _ = std::process::Command::new("kill")
+                .arg(pid.to_string())
+                .status();
         }
     }
 
