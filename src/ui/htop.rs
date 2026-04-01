@@ -216,10 +216,11 @@ fn draw_cpu_section(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
         return;
     }
 
-    // We'll split the inner area: top portion for bars, bottom for sparkline + temp
+    // We'll split the inner area: top portion for bars, then sparkline, split line, temp+throttle
     let sparkline_height: u16 = 1;
+    let split_height: u16 = 1;   // usr/sys/idle breakdown
     let temp_height: u16 = 1;
-    let reserved = sparkline_height + temp_height;
+    let reserved = sparkline_height + split_height + temp_height;
     let bars_height = inner.height.saturating_sub(reserved);
 
     let bars_area = Rect {
@@ -234,9 +235,15 @@ fn draw_cpu_section(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
         width: inner.width,
         height: sparkline_height,
     };
-    let temp_area = Rect {
+    let split_area = Rect {
         x: inner.x,
         y: inner.y + bars_height + sparkline_height,
+        width: inner.width,
+        height: split_height,
+    };
+    let temp_area = Rect {
+        x: inner.x,
+        y: inner.y + bars_height + sparkline_height + split_height,
         width: inner.width,
         height: temp_height,
     };
@@ -257,28 +264,78 @@ fn draw_cpu_section(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
     // Sparkline history
     draw_cpu_sparkline(frame, snap, sparkline_area);
 
-    // Temperature
-    let temp_line = if let Some(temp) = snap.cpu_temp {
+    // User/System/Idle breakdown line
+    let have_split = snap.cpu_user_pct > 0.0 || snap.cpu_system_pct > 0.0 || snap.cpu_idle_pct > 0.0;
+    let split_line = if have_split {
         Line::from(vec![
-            Span::styled("Temp: ", Style::default().fg(Color::Cyan)),
+            Span::styled("usr:", Style::default().fg(Color::Cyan)),
             Span::styled(
-                format!("{:.0}°C", temp),
-                Style::default().fg(if temp > 80.0 {
-                    Color::Red
-                } else if temp > 60.0 {
-                    Color::Yellow
-                } else {
-                    Color::Green
-                }),
+                format!("{:.1}%  ", snap.cpu_user_pct),
+                Style::default().fg(Color::Green),
+            ),
+            Span::styled("sys:", Style::default().fg(Color::Cyan)),
+            Span::styled(
+                format!("{:.1}%  ", snap.cpu_system_pct),
+                Style::default().fg(Color::Red),
+            ),
+            Span::styled("idle:", Style::default().fg(Color::Cyan)),
+            Span::styled(
+                format!("{:.1}%", snap.cpu_idle_pct),
+                Style::default().fg(Color::DarkGray),
             ),
         ])
     } else {
         Line::from(vec![
-            Span::styled("Temp: ", Style::default().fg(Color::Cyan)),
-            Span::styled("N/A", Style::default().fg(Color::DarkGray)),
+            Span::styled("usr:--  sys:--  idle:--", Style::default().fg(Color::DarkGray)),
         ])
     };
-    frame.render_widget(Paragraph::new(temp_line), temp_area);
+    frame.render_widget(Paragraph::new(split_line), split_area);
+
+    // Temperature + throttle line
+    let mut temp_spans: Vec<Span> = Vec::new();
+
+    // Temp part
+    temp_spans.push(Span::styled("Temp: ", Style::default().fg(Color::Cyan)));
+    if let Some(temp) = snap.cpu_temp {
+        temp_spans.push(Span::styled(
+            format!("{:.0}°C  ", temp),
+            Style::default().fg(if temp > 80.0 {
+                Color::Red
+            } else if temp > 60.0 {
+                Color::Yellow
+            } else {
+                Color::Green
+            }),
+        ));
+    } else {
+        temp_spans.push(Span::styled("N/A  ", Style::default().fg(Color::DarkGray)));
+    }
+
+    // Throttle / frequency part
+    if snap.throttled {
+        let freq_label = match (snap.cpu_freq_current, snap.cpu_freq_max) {
+            (Some(c), Some(m)) => format!("({:.1}/{:.1} GHz)", c as f64 / 1000.0, m as f64 / 1000.0),
+            _ => String::new(),
+        };
+        temp_spans.push(Span::styled(
+            format!("Throttled {}", freq_label),
+            Style::default()
+                .fg(Color::Red)
+                .add_modifier(Modifier::BOLD | Modifier::RAPID_BLINK),
+        ));
+    } else if let (Some(c), Some(m)) = (snap.cpu_freq_current, snap.cpu_freq_max) {
+        temp_spans.push(Span::styled(
+            format!("{:.1}/{:.1} GHz", c as f64 / 1000.0, m as f64 / 1000.0),
+            Style::default().fg(Color::Green),
+        ));
+    } else if let Some(m) = snap.cpu_freq_max {
+        temp_spans.push(Span::styled(
+            format!("{:.1} GHz", m as f64 / 1000.0),
+            Style::default().fg(Color::Green),
+        ));
+    }
+
+    frame.render_widget(Paragraph::new(Line::from(temp_spans)), temp_area);
 }
 
 fn draw_cpu_column(frame: &mut Frame, cores: &[crate::system_monitor::CpuCoreInfo], start_idx: usize, area: Rect) {

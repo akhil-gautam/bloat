@@ -120,9 +120,17 @@ pub struct SystemSnapshot {
     // CPU
     pub cpu_usage_per_core: Vec<CpuCoreInfo>,
     pub cpu_usage_total: f32,
+    pub cpu_user_pct: f32,
+    pub cpu_system_pct: f32,
+    pub cpu_idle_pct: f32,
     pub cpu_temp: Option<f32>,
     pub cpu_history: Vec<f32>,
     pub cpu_per_core_history: Vec<Vec<f32>>,
+
+    // Thermal throttle
+    pub throttled: bool,
+    pub cpu_freq_current: Option<u64>,  // Current avg frequency MHz
+    pub cpu_freq_max: Option<u64>,      // Max frequency MHz
 
     // Memory
     pub mem_total: u64,
@@ -197,6 +205,8 @@ pub struct SystemMonitor {
     cached_battery: Option<BatteryInfo>,
     cached_mem_breakdown: Option<MemoryBreakdown>,
     cached_mem_pressure_level: u8,
+    cached_cpu_split: Option<(f32, f32, f32)>,  // (user, system, idle)
+    cached_throttle: (bool, Option<u64>, Option<u64>),  // (throttled, current_mhz, max_mhz)
     cached_gpu: Option<GpuInfo>,
     cached_net_apps: Vec<NetAppInfo>,
     last_slow_refresh: Instant,
@@ -251,6 +261,8 @@ impl SystemMonitor {
             cached_battery: None,
             cached_mem_breakdown: None,
             cached_mem_pressure_level: 100,
+            cached_cpu_split: None,
+            cached_throttle: (false, None, None),
             cached_gpu: None,
             cached_net_apps: Vec::new(),
             last_slow_refresh: old_time,
@@ -287,6 +299,8 @@ impl SystemMonitor {
             self.cached_gpu = parse_gpu_info();
             self.cached_net_apps = parse_net_apps();
             self.cached_listening_ports = parse_listening_ports();
+            self.cached_cpu_split = parse_cpu_split();
+            self.cached_throttle = detect_throttle();
             self.last_slow_refresh = Instant::now();
         }
 
@@ -511,12 +525,22 @@ impl SystemMonitor {
             })
             .collect();
 
+        let (cpu_user_pct, cpu_system_pct, cpu_idle_pct) =
+            self.cached_cpu_split.unwrap_or((0.0, 0.0, 0.0));
+        let (throttled, cpu_freq_current, cpu_freq_max) = self.cached_throttle;
+
         SystemSnapshot {
             cpu_usage_per_core,
             cpu_usage_total,
+            cpu_user_pct,
+            cpu_system_pct,
+            cpu_idle_pct,
             cpu_temp,
             cpu_history: self.cpu_history.clone(),
             cpu_per_core_history,
+            throttled,
+            cpu_freq_current,
+            cpu_freq_max,
             mem_total,
             mem_used,
             swap_total,
@@ -1123,4 +1147,76 @@ fn parse_iostat() -> Option<DiskIoStats> {
         read_per_sec: bytes_per_sec,
         write_per_sec: 0, // iostat basic mode doesn't split r/w
     })
+}
+
+// ---------------------------------------------------------------------------
+// CPU user/system/idle split via `top`
+// ---------------------------------------------------------------------------
+
+/// Parse CPU time breakdown from `top -l 1 -n 0 -s 0`.
+/// Returns `(user_pct, system_pct, idle_pct)` or None on failure.
+fn parse_cpu_split() -> Option<(f32, f32, f32)> {
+    let output = std::process::Command::new("top")
+        .args(["-l", "1", "-n", "0", "-s", "0"])
+        .output()
+        .ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Typical line: "CPU usage: 12.50% user, 8.33% sys, 79.16% idle"
+    for line in stdout.lines() {
+        if line.contains("CPU usage:") {
+            let user = parse_pct_before(line, "% user").or_else(|| parse_pct_before(line, "% us"));
+            let sys  = parse_pct_before(line, "% sys").or_else(|| parse_pct_before(line, "% sy"));
+            let idle = parse_pct_before(line, "% idle").or_else(|| parse_pct_before(line, "% id"));
+            if let (Some(u), Some(s), Some(i)) = (user, sys, idle) {
+                return Some((u, s, i));
+            }
+        }
+    }
+    None
+}
+
+/// Find a percentage number immediately before `suffix` in `s`.
+fn parse_pct_before(s: &str, suffix: &str) -> Option<f32> {
+    let pos = s.find(suffix)?;
+    let before = &s[..pos];
+    // Walk backwards over digits and '.'
+    let start = before
+        .rfind(|c: char| !c.is_ascii_digit() && c != '.')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    before[start..].parse::<f32>().ok()
+}
+
+// ---------------------------------------------------------------------------
+// Thermal throttle detection
+// ---------------------------------------------------------------------------
+
+/// Read a sysctl key and return it as u64.
+fn sysctl_u64(key: &str) -> Option<u64> {
+    let output = std::process::Command::new("sysctl")
+        .args(["-n", key])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&output.stdout).trim().parse::<u64>().ok()
+}
+
+/// Detect CPU throttling.
+/// Returns `(throttled, current_freq_mhz, max_freq_mhz)`.
+fn detect_throttle() -> (bool, Option<u64>, Option<u64>) {
+    let current = sysctl_u64("hw.cpufrequency");
+    let max     = sysctl_u64("hw.cpufrequency_max");
+    match (current, max) {
+        (Some(c), Some(m)) if m > 0 => {
+            let throttled = c < m * 9 / 10;
+            (throttled, Some(c / 1_000_000), Some(m / 1_000_000))
+        }
+        _ => {
+            // Apple Silicon: hw.cpufrequency is absent. Fall back to comparing
+            // the current average core frequency reported by sysinfo against the
+            // nominal max from `sysctl hw.cpufrequency_max` (Intel path above
+            // already handles this). On AS we have no root-free way to get the
+            // true current P-cluster frequency, so we just report no data.
+            (false, None, None)
+        }
+    }
 }
