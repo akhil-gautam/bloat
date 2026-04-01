@@ -94,6 +94,10 @@ pub struct GpuInfo {
     pub utilization: Option<f32>,
     pub vram_used: Option<u64>,
     pub vram_total: Option<u64>,
+    pub tiler_utilization: Option<f32>,    // from ioreg PerformanceStatistics
+    pub renderer_utilization: Option<f32>, // from ioreg PerformanceStatistics
+    pub alloc_system_memory: Option<u64>,  // GPU's total allocated system memory
+    pub in_use_system_memory: Option<u64>, // GPU's in-use system memory
 }
 
 /// Per-app network usage.
@@ -207,6 +211,8 @@ pub struct ProcessInfo {
     pub service: Option<String>,
     /// TCP ports this process is listening on.
     pub listening_ports: Vec<u16>,
+    /// Whether this process likely uses the GPU.
+    pub gpu_user: bool,
 }
 
 /// A full snapshot of system state.
@@ -291,6 +297,7 @@ impl SystemSnapshot {
                 runtime: None,
                 service: None,
                 listening_ports: Vec::new(),
+                gpu_user: false,
             })
             .collect();
 
@@ -592,6 +599,11 @@ impl SystemMonitor {
                     .get(&pid)
                     .cloned()
                     .unwrap_or_default();
+                let gpu_user = name.contains("Renderer")
+                    || name.contains("WindowServer")
+                    || name.contains("MTLCompiler")
+                    || name.contains("ollama")
+                    || name.contains("mlx");
                 ProcessInfo {
                     pid,
                     name,
@@ -604,6 +616,7 @@ impl SystemMonitor {
                     runtime,
                     service,
                     listening_ports,
+                    gpu_user,
                 }
             })
             .collect();
@@ -954,6 +967,30 @@ fn parse_gpu_info() -> Option<GpuInfo> {
                 .unwrap_or_else(|| "GPU".to_string())
         });
 
+    // Helper: extract a numeric value from a PerformanceStatistics key like:
+    // "Device Utilization %"=13  or  "Alloc system memory"=2599911424
+    let extract_perf_stat = |key: &str| -> Option<u64> {
+        text.lines().find_map(|l| {
+            if let Some(pos) = l.find(key) {
+                let after = &l[pos + key.len()..];
+                // Expect '=' immediately (possibly with a closing quote before)
+                // e.g. key ends with % then `"=13`
+                let after = after.trim_start_matches('"').trim_start_matches('=').trim_start();
+                if let Some(eq) = after.find('=') {
+                    let val_str = &after[eq + 1..];
+                    let num: String = val_str.chars().take_while(|c| c.is_ascii_digit()).collect();
+                    num.parse::<u64>().ok()
+                } else {
+                    // Maybe already at the number
+                    let num: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+                    num.parse::<u64>().ok()
+                }
+            } else {
+                None
+            }
+        })
+    };
+
     // Device Utilization % from PerformanceStatistics dict
     // Format: "Device Utilization %"=13
     let utilization = text.lines().find_map(|l| {
@@ -972,6 +1009,18 @@ fn parse_gpu_info() -> Option<GpuInfo> {
             None
         }
     });
+
+    // Tiler Utilization %
+    let tiler_utilization = extract_perf_stat("Tiler Utilization %").map(|v| v as f32);
+
+    // Renderer Utilization %
+    let renderer_utilization = extract_perf_stat("Renderer Utilization %").map(|v| v as f32);
+
+    // Alloc system memory (bytes)
+    let alloc_system_memory = extract_perf_stat("Alloc system memory");
+
+    // In use system memory (bytes)
+    let in_use_system_memory = extract_perf_stat("In use system memory");
 
     // VRAM
     let vram_total = text.lines().find_map(|l| {
@@ -995,6 +1044,10 @@ fn parse_gpu_info() -> Option<GpuInfo> {
         utilization,
         vram_used,
         vram_total,
+        tiler_utilization,
+        renderer_utilization,
+        alloc_system_memory,
+        in_use_system_memory,
     })
 }
 

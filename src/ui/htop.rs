@@ -1085,28 +1085,61 @@ fn draw_gpu_section(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
     }
 
     if let Some(ref gpu) = snap.gpu {
-        let util_str = if let Some(util) = gpu.utilization {
-            format!("{:.0}% util", util)
+        // --- Line 1: Name + Device utilization + Tiler utilization ---
+        let device_str = if let Some(util) = gpu.utilization {
+            format!("Device:{:.0}%", util)
         } else {
-            "N/A".to_string()
+            "Device:N/A".to_string()
+        };
+        let tiler_str = if let Some(t) = gpu.tiler_utilization {
+            format!(" Tiler:{:.0}%", t)
+        } else {
+            String::new()
         };
 
-        let vram_str = match (gpu.vram_used, gpu.vram_total) {
-            (Some(used), Some(total)) => {
-                format!("  VRAM: {}/{}", format_size(used), format_size(total))
-            }
-            _ => String::new(),
-        };
-
-        let line = Line::from(vec![
+        let line1 = Line::from(vec![
             Span::styled(
-                format!("{}: ", gpu.name),
+                format!("{} ", gpu.name),
                 Style::default().fg(Color::Cyan),
             ),
-            Span::styled(util_str, Style::default().fg(Color::LightMagenta)),
-            Span::styled(vram_str, Style::default().fg(Color::White)),
+            Span::styled(device_str, Style::default().fg(Color::LightMagenta)),
+            Span::styled(tiler_str, Style::default().fg(Color::Magenta)),
         ]);
-        frame.render_widget(Paragraph::new(line), inner);
+
+        // --- Line 2: Renderer utilization + GPU memory (in_use / alloc) ---
+        let renderer_str = if let Some(r) = gpu.renderer_utilization {
+            format!("Renderer:{:.0}%", r)
+        } else {
+            String::new()
+        };
+
+        let mem_str = match (gpu.in_use_system_memory, gpu.alloc_system_memory) {
+            (Some(used), Some(alloc)) => {
+                format!("  Mem:{}/{}", format_size(used), format_size(alloc))
+            }
+            (None, Some(alloc)) => format!("  Mem:?/{}", format_size(alloc)),
+            _ => {
+                // Fall back to VRAM if new fields not available
+                match (gpu.vram_used, gpu.vram_total) {
+                    (Some(used), Some(total)) => {
+                        format!("  VRAM:{}/{}", format_size(used), format_size(total))
+                    }
+                    _ => String::new(),
+                }
+            }
+        };
+
+        let mut lines = vec![line1];
+
+        if !renderer_str.is_empty() || !mem_str.is_empty() {
+            let line2 = Line::from(vec![
+                Span::styled(renderer_str, Style::default().fg(Color::LightMagenta)),
+                Span::styled(mem_str, Style::default().fg(Color::White)),
+            ]);
+            lines.push(line2);
+        }
+
+        frame.render_widget(Paragraph::new(lines), inner);
     } else {
         frame.render_widget(
             Paragraph::new(Span::styled("GPU info unavailable", Style::default().fg(Color::DarkGray))),
@@ -1881,6 +1914,13 @@ fn build_process_list_item<'a>(
 
     // Runtime/service/port badges — only when terminal is wide enough
     if wide {
+        if p.gpu_user {
+            spans.push(Span::styled(" ", Style::default().bg(bg)));
+            spans.push(Span::styled(
+                "[GPU]",
+                Style::default().fg(Color::LightMagenta).bg(bg),
+            ));
+        }
         if let Some(ref runtime) = p.runtime {
             spans.push(Span::styled(" ", Style::default().bg(bg)));
             spans.push(Span::styled(
