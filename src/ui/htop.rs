@@ -5,7 +5,7 @@ use ratatui::widgets::*;
 
 use crate::alerts::{Alert, AlertLevel};
 use crate::app::{GroupMode, ProcessSort, SystemTabState};
-use crate::system_monitor::{ProcessInfo, SystemSnapshot, ThreadInfo};
+use crate::system_monitor::{DiskLatency, ProcessInfo, SystemSnapshot, ThreadInfo};
 use crate::ui::format_size;
 
 // ---------------------------------------------------------------------------
@@ -163,12 +163,14 @@ fn draw_left_column(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
     // +2 for the sparkline row when network data is available
     let sparkline_extra: u16 = if snap.network.is_some() && !snap.net_recv_history.is_empty() { 1 } else { 0 };
     let net_height = 3 + snap.net_apps.len().min(6) as u16 + sparkline_extra; // header + apps + sparkline
+    // Disk I/O block: 3 lines minimum; grow to 4 when latency data is available
+    let disk_height: u16 = if snap.disk_latency.is_some() { 4 } else { 3 };
     let sub = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(4),          // CPU
             Constraint::Length(net_height.max(4)), // Network
-            Constraint::Length(3),        // Disk I/O
+            Constraint::Length(disk_height), // Disk I/O
             Constraint::Length(3),        // GPU
         ])
         .split(area);
@@ -884,9 +886,12 @@ fn draw_disk_io_section(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
         return;
     }
 
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Throughput line
     if let Some(ref io) = snap.disk_io {
         let total = io.read_per_sec + io.write_per_sec;
-        let line = if io.write_per_sec > 0 {
+        let throughput_line = if io.write_per_sec > 0 {
             Line::from(vec![
                 Span::styled("R: ", Style::default().fg(Color::Green)),
                 Span::styled(format!("{}/s  ", format_size(io.read_per_sec)), Style::default().fg(Color::White)),
@@ -899,8 +904,37 @@ fn draw_disk_io_section(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
                 Span::styled(format!("{}/s", format_size(total)), Style::default().fg(Color::White)),
             ])
         };
-        frame.render_widget(Paragraph::new(line), inner);
+        lines.push(throughput_line);
+    } else {
+        lines.push(Line::from(Span::styled("No disk data", Style::default().fg(Color::DarkGray))));
     }
+
+    // Latency line (shown when available)
+    if let Some(ref lat) = snap.disk_latency {
+        lines.push(format_latency_line(lat));
+    }
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Format a single-line latency display from a `DiskLatency` snapshot.
+fn format_latency_line(lat: &DiskLatency) -> Line<'static> {
+    // Format a microsecond value as either "X.XXms" or "XXXµs" depending on magnitude.
+    let fmt_us = |us: f64| -> String {
+        if us >= 1000.0 {
+            format!("{:.2}ms", us / 1000.0)
+        } else {
+            format!("{:.0}µs", us)
+        }
+    };
+
+    Line::from(vec![
+        Span::styled("Latency: ", Style::default().fg(Color::Cyan)),
+        Span::styled(fmt_us(lat.avg_read_us), Style::default().fg(Color::Green)),
+        Span::styled(" R / ", Style::default().fg(Color::DarkGray)),
+        Span::styled(fmt_us(lat.avg_write_us), Style::default().fg(Color::Yellow)),
+        Span::styled(" W", Style::default().fg(Color::DarkGray)),
+    ])
 }
 
 // ---------------------------------------------------------------------------

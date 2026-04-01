@@ -42,6 +42,14 @@ pub struct DiskIoStats {
     pub write_per_sec: u64,
 }
 
+/// NVMe / disk latency estimate derived from iostat.
+#[derive(Clone, Debug)]
+pub struct DiskLatency {
+    pub device: String,
+    pub avg_read_us: f64,   // microseconds (estimated)
+    pub avg_write_us: f64,  // microseconds (estimated)
+}
+
 /// Battery information parsed from pmset.
 #[derive(Clone, Debug)]
 pub struct BatteryInfo {
@@ -221,6 +229,7 @@ pub struct SystemSnapshot {
 
     // Disk I/O
     pub disk_io: Option<DiskIoStats>,
+    pub disk_latency: Option<DiskLatency>,
 
     // Battery
     pub battery: Option<BatteryInfo>,
@@ -256,11 +265,6 @@ pub struct SystemMonitor {
     prev_net_bytes: HashMap<String, (u64, u64)>,
     prev_net_time: Instant,
 
-    // Disk I/O rate tracking
-    prev_disk_read: u64,
-    prev_disk_write: u64,
-    prev_disk_time: Instant,
-
     // CPU history (last 60 total CPU readings)
     cpu_history: Vec<f32>,
 
@@ -279,6 +283,7 @@ pub struct SystemMonitor {
     cached_throttle: (bool, Option<u64>, Option<u64>),  // (throttled, current_mhz, max_mhz)
     cached_gpu: Option<GpuInfo>,
     cached_net_apps: Vec<NetAppInfo>,
+    cached_disk_latency: Option<DiskLatency>,
     last_slow_refresh: Instant,
 
     // Process diff tracking
@@ -326,9 +331,6 @@ impl SystemMonitor {
             last_refresh: now,
             prev_net_bytes: HashMap::new(),
             prev_net_time: now,
-            prev_disk_read: 0,
-            prev_disk_write: 0,
-            prev_disk_time: now,
             cpu_history: Vec::new(),
             per_core_history: Vec::new(),
             net_recv_history: VecDeque::new(),
@@ -340,6 +342,7 @@ impl SystemMonitor {
             cached_throttle: (false, None, None),
             cached_gpu: None,
             cached_net_apps: Vec::new(),
+            cached_disk_latency: None,
             last_slow_refresh: old_time,
             prev_process_snapshot: HashMap::new(),
             last_diff_time: old_time,
@@ -389,6 +392,7 @@ impl SystemMonitor {
             self.cached_listening_ports = parse_listening_ports();
             self.cached_cpu_split = parse_cpu_split();
             self.cached_throttle = detect_throttle();
+            self.cached_disk_latency = parse_disk_latency();
             self.last_slow_refresh = Instant::now();
         }
 
@@ -572,16 +576,6 @@ impl SystemMonitor {
             self.net_sent_history.pop_front();
         }
 
-        // Disk I/O
-        let elapsed_disk = now.duration_since(self.prev_disk_time).as_secs_f64().max(0.001);
-        let (total_read, total_write) = self
-            .sys
-            .processes()
-            .values()
-            .fold((0u64, 0u64), |(r, w), p| {
-                let du = p.disk_usage();
-                (r + du.total_read_bytes, w + du.total_written_bytes)
-            });
         // Disk I/O via iostat (more reliable than per-process counters on macOS)
         let disk_io = if should_refresh {
             parse_iostat().or(Some(DiskIoStats {
@@ -667,6 +661,7 @@ impl SystemMonitor {
             net_recv_history: self.net_recv_history.iter().copied().collect(),
             net_sent_history: self.net_sent_history.iter().copied().collect(),
             disk_io,
+            disk_latency: self.cached_disk_latency.clone(),
             battery: self.cached_battery.clone(),
             volumes,
             gpu: self.cached_gpu.clone(),
@@ -1259,6 +1254,99 @@ fn parse_iostat() -> Option<DiskIoStats> {
     Some(DiskIoStats {
         read_per_sec: bytes_per_sec,
         write_per_sec: 0, // iostat basic mode doesn't split r/w
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Disk latency estimation via iostat
+// ---------------------------------------------------------------------------
+
+/// Estimate per-device read/write latency from `iostat -d -c 2 -w 1`.
+///
+/// `iostat` gives: KB/t (KB per transfer), tps (transfers/sec), MB/s.
+/// Latency ≈ (KB/t * 1024) / (MB/s * 1024 * 1024) seconds
+///           = KB/t / (MB/s * 1024) seconds
+///           = KB/t / (MB/s * 1024) * 1_000_000 microseconds
+///
+/// We use the second sample (index 1) which reflects the most recent interval.
+/// If MB/s is 0 we fall back to a simple `1 / tps * 1_000_000` estimate.
+/// Returns the stats for the first (primary) disk found.
+fn parse_disk_latency() -> Option<DiskLatency> {
+    // Run two samples with a 1-second window; output arrives after ~1 s.
+    // We run this only in the slow-refresh path (every 5 s) so the 1 s wait
+    // is acceptable.
+    let output = std::process::Command::new("iostat")
+        .args(["-d", "-c", "2", "-w", "1"])
+        .output()
+        .ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Expected format (two header + two data repetitions):
+    //               disk0
+    //     KB/t  tps  MB/s
+    //    22.65  187  4.13
+    //
+    //               disk0
+    //     KB/t  tps  MB/s
+    //     5.12   42  0.21
+    //
+    // We want the last data row (second sample).
+    let lines: Vec<&str> = stdout.lines().collect();
+
+    // Collect device name from the first disk-header line (starts with whitespace + "disk")
+    let device = lines.iter()
+        .find(|l| {
+            let t = l.trim();
+            t.starts_with("disk") || t.contains("disk0")
+        })
+        .map(|l| {
+            // Take the first word that starts with "disk"
+            l.split_whitespace()
+                .find(|w| w.starts_with("disk"))
+                .unwrap_or("disk0")
+                .to_string()
+        })
+        .unwrap_or_else(|| "disk0".to_string());
+
+    // Collect all numeric data rows (skip header lines containing "KB/t")
+    let data_rows: Vec<Vec<f64>> = lines.iter()
+        .filter(|l| !l.trim().is_empty() && !l.contains("KB/t") && !l.trim().starts_with("disk"))
+        .map(|l| {
+            l.split_whitespace()
+                .filter_map(|s| s.parse::<f64>().ok())
+                .collect::<Vec<f64>>()
+        })
+        .filter(|v| !v.is_empty())
+        .collect();
+
+    // Take the last data row (second sample, most recent interval)
+    let row = data_rows.last()?;
+    if row.len() < 3 {
+        return None;
+    }
+
+    // Values per disk in groups of 3: KB/t, tps, MB/s
+    // Use first disk only (indices 0,1,2)
+    let kb_per_t = row[0];
+    let tps = row[1];
+    let mb_s = row[2];
+
+    let latency_us = if mb_s > 0.001 {
+        // latency = (KB/t) / (MB/s * 1024) * 1_000_000 µs
+        (kb_per_t / (mb_s * 1024.0)) * 1_000_000.0
+    } else if tps > 0.5 {
+        // Fallback: 1/tps seconds → µs
+        (1.0 / tps) * 1_000_000.0
+    } else {
+        return None;
+    };
+
+    // iostat doesn't separate read vs write in basic mode; report the same
+    // estimate for both directions.
+    Some(DiskLatency {
+        device,
+        avg_read_us: latency_us,
+        avg_write_us: latency_us,
     })
 }
 
