@@ -1458,6 +1458,30 @@ fn build_process_list_item<'a>(
     spans.push(Span::styled("  ", Style::default().bg(bg)));
     spans.push(Span::styled(name_display, Style::default().fg(Color::White).bg(bg)));
 
+    // Runtime/service/port badges — only when terminal is wide enough
+    if wide {
+        if let Some(ref runtime) = p.runtime {
+            spans.push(Span::styled(" ", Style::default().bg(bg)));
+            spans.push(Span::styled(
+                format!("[{}]", runtime),
+                Style::default().fg(Color::Cyan).bg(bg),
+            ));
+        }
+        if let Some(ref service) = p.service {
+            spans.push(Span::styled(" ", Style::default().bg(bg)));
+            spans.push(Span::styled(
+                service.clone(),
+                Style::default().fg(Color::Yellow).bg(bg),
+            ));
+        }
+        for port in &p.listening_ports {
+            spans.push(Span::styled(
+                format!(" :{}", port),
+                Style::default().fg(Color::Green).bg(bg),
+            ));
+        }
+    }
+
     ListItem::new(Line::from(spans))
 }
 

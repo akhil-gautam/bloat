@@ -107,6 +107,12 @@ pub struct ProcessInfo {
     pub disk_read: u64,
     pub disk_write: u64,
     pub parent_pid: Option<u32>,
+    /// Detected runtime environment (e.g. "Node", "Python", "Ruby").
+    pub runtime: Option<String>,
+    /// Detected service name (e.g. "Rails", "Webpack", "Redis").
+    pub service: Option<String>,
+    /// TCP ports this process is listening on.
+    pub listening_ports: Vec<u16>,
 }
 
 /// A full snapshot of system state.
@@ -199,6 +205,9 @@ pub struct SystemMonitor {
     prev_process_snapshot: HashMap<u32, (String, f32)>,  // pid -> (name, cpu%)
     last_diff_time: Instant,
     cached_process_diff: ProcessDiff,
+
+    // Listening ports cache (pid -> sorted port list)
+    cached_listening_ports: HashMap<u32, Vec<u16>>,
 }
 
 impl SystemMonitor {
@@ -248,6 +257,7 @@ impl SystemMonitor {
             prev_process_snapshot: HashMap::new(),
             last_diff_time: old_time,
             cached_process_diff: ProcessDiff::default(),
+            cached_listening_ports: HashMap::new(),
         }
     }
 
@@ -276,6 +286,7 @@ impl SystemMonitor {
                 .unwrap_or(100); // 100 = no pressure
             self.cached_gpu = parse_gpu_info();
             self.cached_net_apps = parse_net_apps();
+            self.cached_listening_ports = parse_listening_ports();
             self.last_slow_refresh = Instant::now();
         }
 
@@ -354,15 +365,28 @@ impl SystemMonitor {
                     })
                     .unwrap_or_default();
                 let du = p.disk_usage();
+                let name = p.name().to_string_lossy().to_string();
+                let cmd: Vec<String> = p.cmd().iter().map(|a| a.to_string_lossy().to_string()).collect();
+                let pid = p.pid().as_u32();
+                let runtime = detect_runtime(&name);
+                let service = detect_service(&name, &cmd);
+                let listening_ports = self
+                    .cached_listening_ports
+                    .get(&pid)
+                    .cloned()
+                    .unwrap_or_default();
                 ProcessInfo {
-                    pid: p.pid().as_u32(),
-                    name: p.name().to_string_lossy().to_string(),
+                    pid,
+                    name,
                     cpu_percent: p.cpu_usage(),
                     mem_bytes: p.memory(),
                     user,
                     disk_read: du.read_bytes,
                     disk_write: du.written_bytes,
                     parent_pid: p.parent().map(|pid| pid.as_u32()),
+                    runtime,
+                    service,
+                    listening_ports,
                 }
             })
             .collect();
@@ -907,6 +931,150 @@ fn parse_net_apps() -> Vec<NetAppInfo> {
     result.retain(|a| !a.connections.is_empty());
     result.truncate(20);
     result
+}
+
+// ---------------------------------------------------------------------------
+// Runtime / service detection helpers
+// ---------------------------------------------------------------------------
+
+/// Detect the language runtime from a process name.
+fn detect_runtime(name: &str) -> Option<String> {
+    let lower = name.to_lowercase();
+    if lower.contains("node") {
+        Some("Node".to_string())
+    } else if lower.contains("python") {
+        Some("Python".to_string())
+    } else if lower.contains("ruby") {
+        Some("Ruby".to_string())
+    } else if lower == "java" || lower.contains("java") {
+        Some("Java".to_string())
+    } else if lower == "go" || lower == "gopls" {
+        Some("Go".to_string())
+    } else if lower == "rustc" || lower == "cargo" {
+        Some("Rust".to_string())
+    } else if lower.contains("beam") {
+        Some("Elixir/Erlang".to_string())
+    } else if lower == "php" {
+        Some("PHP".to_string())
+    } else if lower == "deno" {
+        Some("Deno".to_string())
+    } else if lower == "bun" {
+        Some("Bun".to_string())
+    } else {
+        None
+    }
+}
+
+/// Detect the service name from a process name and its command-line arguments.
+fn detect_service(name: &str, cmd: &[String]) -> Option<String> {
+    let name_lower = name.to_lowercase();
+
+    // Name-based service detection (fast path)
+    if name_lower == "redis-server" {
+        return Some("Redis".to_string());
+    }
+    if name_lower == "postgres" || name_lower == "postmaster" {
+        return Some("PostgreSQL".to_string());
+    }
+    if name_lower == "mongod" {
+        return Some("MongoDB".to_string());
+    }
+    if name_lower == "nginx" {
+        return Some("Nginx".to_string());
+    }
+
+    // Argument-based service detection — check all argv entries
+    let args_lower: Vec<String> = cmd.iter().map(|a| a.to_lowercase()).collect();
+
+    // next + server together → Next.js (check before plain "next")
+    let has_next = args_lower.iter().any(|a| a.contains("next"));
+    let has_server = args_lower.iter().any(|a| a.contains("server"));
+    if has_next && has_server {
+        return Some("Next.js".to_string());
+    }
+
+    for arg in &args_lower {
+        if arg.contains("rails") {
+            return Some("Rails".to_string());
+        }
+        if arg.contains("sidekiq") {
+            return Some("Sidekiq".to_string());
+        }
+        if arg.contains("webpack") {
+            return Some("Webpack".to_string());
+        }
+        if arg.contains("vite") {
+            return Some("Vite".to_string());
+        }
+        if arg.contains("puma") {
+            return Some("Puma".to_string());
+        }
+        if arg.contains("unicorn") {
+            return Some("Unicorn".to_string());
+        }
+        if arg.contains("gunicorn") {
+            return Some("Gunicorn".to_string());
+        }
+        if arg.contains("uvicorn") {
+            return Some("Uvicorn".to_string());
+        }
+        if arg.contains("celery") {
+            return Some("Celery".to_string());
+        }
+    }
+
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Listening port discovery via lsof
+// ---------------------------------------------------------------------------
+
+/// Parse `lsof -i -P -n -sTCP:LISTEN` and return a map of PID → listening ports.
+fn parse_listening_ports() -> HashMap<u32, Vec<u16>> {
+    let output = match std::process::Command::new("lsof")
+        .args(["-i", "-P", "-n", "-sTCP:LISTEN"])
+        .output()
+    {
+        Ok(o) => o,
+        Err(_) => return HashMap::new(),
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut map: HashMap<u32, Vec<u16>> = HashMap::new();
+
+    for line in stdout.lines().skip(1) {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        // Typical lsof columns: COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME
+        // NAME field (last) looks like "TCP *:3000 (LISTEN)" or "127.0.0.1:3000 (LISTEN)"
+        if parts.len() < 9 {
+            continue;
+        }
+
+        let pid: u32 = match parts[1].parse() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+
+        // The address/name field — find the one that contains a colon (host:port)
+        // In this lsof invocation it is usually parts[8]
+        let addr = parts[8];
+        // Extract port: everything after the last ':'
+        if let Some(colon) = addr.rfind(':') {
+            let port_str = &addr[colon + 1..];
+            if let Ok(port) = port_str.parse::<u16>() {
+                map.entry(pid).or_default().push(port);
+            }
+        }
+    }
+
+    // Deduplicate and sort each entry
+    for ports in map.values_mut() {
+        ports.sort_unstable();
+        ports.dedup();
+    }
+
+    map
 }
 
 // ---------------------------------------------------------------------------
