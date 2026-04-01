@@ -94,7 +94,9 @@ fn draw_folder_select(frame: &mut Frame, app: &App) {
             Span::styled("a", Style::default().fg(Color::Cyan)),
             Span::styled(" all  ", Style::default().fg(Color::Gray)),
             Span::styled("q", Style::default().fg(Color::Red)),
-            Span::styled(" quit", Style::default().fg(Color::Gray)),
+            Span::styled(" quit  ", Style::default().fg(Color::Gray)),
+            Span::styled("5", Style::default().fg(Color::Yellow)),
+            Span::styled(" system monitor", Style::default().fg(Color::Gray)),
         ]),
     ])
     .block(Block::default().borders(Borders::ALL));

@@ -300,10 +300,16 @@ impl App {
             return;
         }
 
-        // Esc cancels scan
-        if key.code == KeyCode::Esc && self.scanning {
-            self.cancel_scan();
-            return;
+        // Esc cancels scan or goes back to folder select from System tab
+        if key.code == KeyCode::Esc {
+            if self.scanning {
+                self.cancel_scan();
+                return;
+            }
+            if self.tab == Tab::System && self.tree.is_none() {
+                self.screen = Screen::FolderSelect;
+                return;
+            }
         }
 
         // Global keys (main screen)
@@ -427,6 +433,11 @@ impl App {
             KeyCode::Enter => {
                 // Start scan if anything is selected
                 // This is handled by the run loop checking a flag
+            }
+            KeyCode::Char('5') => {
+                // Go to System tab directly from folder select
+                self.screen = Screen::Main;
+                self.tab = Tab::System;
             }
             KeyCode::Char('q') => {
                 self.should_quit = true;
