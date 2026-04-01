@@ -58,6 +58,21 @@ impl History {
         self.points.back().map_or(Vec::new(), |p| p.anomalies.iter().collect())
     }
 
+    pub fn get_point(&self, index: usize) -> Option<&HistoryPoint> {
+        self.points.get(index)
+    }
+
+    pub fn len(&self) -> usize {
+        self.points.len()
+    }
+
+    pub fn anomaly_positions(&self) -> Vec<usize> {
+        self.points.iter().enumerate()
+            .filter(|(_, p)| !p.anomalies.is_empty())
+            .map(|(i, _)| i)
+            .collect()
+    }
+
     fn detect_anomalies(&mut self, point: &mut HistoryPoint) {
         // --- CPU z-score spike detection (rolling window of 30) ---
         const CPU_WINDOW_SIZE: usize = 30;

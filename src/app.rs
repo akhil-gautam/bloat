@@ -64,6 +64,10 @@ pub struct SystemTabState {
     pub group_mode: GroupMode,
     /// PID currently expanded to show its threads. None means no expansion.
     pub expanded_pid: Option<u32>,
+    /// Whether the live view is paused.
+    pub paused: bool,
+    /// None = live view, Some(idx) = viewing historical point at index `idx`.
+    pub history_index: Option<usize>,
 }
 
 impl SystemTabState {
@@ -79,6 +83,8 @@ impl SystemTabState {
             tree_mode: false,
             group_mode: GroupMode::None,
             expanded_pid: None,
+            paused: false,
+            history_index: None,
         }
     }
 }
@@ -713,6 +719,49 @@ impl App {
         }
 
         // Normal mode key handling
+
+        // Space: toggle pause
+        if key.code == KeyCode::Char(' ') {
+            if self.system_tab.paused {
+                // Unpause: return to live view
+                self.system_tab.paused = false;
+                self.system_tab.history_index = None;
+            } else {
+                // Pause: jump to latest history point
+                let len = self.history.len();
+                if len > 0 {
+                    self.system_tab.paused = true;
+                    self.system_tab.history_index = Some(len - 1);
+                }
+            }
+            return;
+        }
+
+        // Left / h: scrub backward (only when paused)
+        if self.system_tab.paused && (key.code == KeyCode::Left || key.code == KeyCode::Char('h')) {
+            if let Some(idx) = self.system_tab.history_index {
+                if idx > 0 {
+                    self.system_tab.history_index = Some(idx - 1);
+                }
+            }
+            return;
+        }
+
+        // Right / l: scrub forward (only when paused)
+        if self.system_tab.paused && (key.code == KeyCode::Right || key.code == KeyCode::Char('l')) {
+            let len = self.history.len();
+            if let Some(idx) = self.system_tab.history_index {
+                if idx + 1 < len {
+                    self.system_tab.history_index = Some(idx + 1);
+                } else {
+                    // Reached the end — unpause and return to live view
+                    self.system_tab.paused = false;
+                    self.system_tab.history_index = None;
+                }
+            }
+            return;
+        }
+
         match key.code {
             // Sort keys
             KeyCode::Char('c') => {
@@ -1008,7 +1057,9 @@ pub fn run(mut terminal: DefaultTerminal, mut app: App) -> std::io::Result<()> {
             rx = Some(app.start_scan());
         }
 
-        // Refresh system stats (always, so alert engine keeps running)
+        // Always collect a live snapshot so the alert engine stays current.
+        // When paused, we don't replace sys_snapshot (which holds the live view
+        // used as the base for the UI), but we still run alerts against fresh data.
         {
             let expanded_pid = app.system_tab.expanded_pid;
             let snap = app.sys_monitor.snapshot_with_threads(
@@ -1016,11 +1067,8 @@ pub fn run(mut terminal: DefaultTerminal, mut app: App) -> std::io::Result<()> {
                 expanded_pid,
             );
             app.alert_engine.update(snap.cpu_usage_total, snap.mem_used, snap.mem_total);
-            app.sys_snapshot = Some(snap);
-        }
 
-        // Record history point for the System tab
-        if let Some(ref snap) = app.sys_snapshot {
+            // Record history for every tick regardless of pause state
             let point = crate::history::HistoryPoint {
                 timestamp: std::time::SystemTime::now(),
                 cpu_total: snap.cpu_usage_total,
@@ -1034,6 +1082,11 @@ pub fn run(mut terminal: DefaultTerminal, mut app: App) -> std::io::Result<()> {
                 net_sent_rate: snap.network.as_ref().map_or(0, |n| n.sent_per_sec),
             };
             app.history.record(point);
+
+            // Only update the displayed snapshot when not paused
+            if !app.system_tab.paused {
+                app.sys_snapshot = Some(snap);
+            }
         }
 
         terminal.draw(|frame| crate::ui::draw(frame, &app))?;

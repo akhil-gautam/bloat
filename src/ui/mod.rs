@@ -44,7 +44,20 @@ fn draw_main(frame: &mut Frame, app: &App) {
         Tab::Cleanup => cleanup::draw(frame, app, chunks[1]),
         Tab::Logs => logs::draw(frame, app, chunks[1]),
         Tab::System => {
-            if let Some(ref snap) = app.sys_snapshot {
+            // When paused with a valid history index, build a synthetic snapshot
+            // from the historical data point so the UI shows past state.
+            let paused_snap: Option<crate::system_monitor::SystemSnapshot> =
+                if app.system_tab.paused {
+                    app.system_tab.history_index
+                        .and_then(|idx| app.history.get_point(idx))
+                        .map(crate::system_monitor::SystemSnapshot::from_history_point)
+                } else {
+                    None
+                };
+
+            let snap_to_draw = paused_snap.as_ref().or(app.sys_snapshot.as_ref());
+
+            if let Some(snap) = snap_to_draw {
                 htop::draw(frame, snap, &app.system_tab, &app.alert_engine.alerts, &app.history, chunks[1]);
             } else {
                 let p = Paragraph::new("Loading system stats...")

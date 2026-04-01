@@ -20,6 +20,9 @@ pub fn draw(
     history: &crate::history::History,
     area: Rect,
 ) {
+    // Determine whether we need a scrubber bar (1 line) when paused
+    let scrubber_height: u16 = if state.paused { 1 } else { 0 };
+
     // Determine whether we need an alert bar (1 line tall)
     let has_critical = alerts.iter().any(|a| a.level == AlertLevel::Critical);
     let has_warning = alerts.iter().any(|a| a.level == AlertLevel::Warning);
@@ -35,6 +38,7 @@ pub fn draw(
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(scrubber_height),  // Scrubber / PAUSED bar (0 when live)
             Constraint::Length(alert_height),     // Alert bar (0 when no alerts)
             Constraint::Min(12),                  // Top panels
             Constraint::Length(anomaly_height),   // Anomaly indicator (0 when none)
@@ -43,22 +47,129 @@ pub fn draw(
         ])
         .split(area);
 
-    // Render the alert bar if needed
-    if alert_height > 0 {
-        draw_alert_bar(frame, alerts, has_critical, rows[0]);
+    // Render the scrubber bar if paused
+    if scrubber_height > 0 {
+        draw_scrubber_bar(frame, state, history, snap, rows[0]);
     }
 
-    draw_top_panels(frame, snap, rows[1]);
+    // Render the alert bar if needed
+    if alert_height > 0 {
+        draw_alert_bar(frame, alerts, has_critical, rows[1]);
+    }
+
+    draw_top_panels(frame, snap, rows[2]);
 
     // Render anomaly indicators between top panels and process list
     if anomaly_height > 0 {
-        draw_anomaly_bar(frame, &latest_anomalies, rows[2]);
+        draw_anomaly_bar(frame, &latest_anomalies, rows[3]);
     }
 
     if state.show_diff {
-        draw_diff_panel(frame, snap, rows[3]);
+        draw_diff_panel(frame, snap, rows[4]);
     }
-    draw_process_section(frame, snap, state, rows[4]);
+    draw_process_section(frame, snap, state, rows[5]);
+}
+
+// ---------------------------------------------------------------------------
+// Scrubber / PAUSED bar
+// ---------------------------------------------------------------------------
+
+fn draw_scrubber_bar(
+    frame: &mut Frame,
+    state: &SystemTabState,
+    history: &crate::history::History,
+    snap: &SystemSnapshot,
+    area: Rect,
+) {
+    use std::time::SystemTime;
+
+    let total = history.len();
+    let idx = state.history_index.unwrap_or(total.saturating_sub(1));
+
+    // --- Time offset label ---
+    let time_offset_str = if let Some(point) = history.get_point(idx) {
+        match SystemTime::now().duration_since(point.timestamp) {
+            Ok(d) => {
+                let secs = d.as_secs();
+                if secs < 60 {
+                    format!("T-{}s", secs)
+                } else {
+                    format!("T-{}m{}s", secs / 60, secs % 60)
+                }
+            }
+            Err(_) => "T-0s".to_string(),
+        }
+    } else {
+        "T-?".to_string()
+    };
+
+    // --- Metrics from current historical point ---
+    let (cpu_pct, mem_pct) = if let Some(point) = history.get_point(idx) {
+        let mem = if point.mem_total > 0 {
+            (point.mem_used as f64 / point.mem_total as f64 * 100.0) as u32
+        } else {
+            0
+        };
+        (point.cpu_total as u32, mem)
+    } else {
+        (snap.cpu_usage_total as u32, 0u32)
+    };
+
+    // --- Build the scrubber track with anomaly markers ---
+    let anomaly_positions = history.anomaly_positions();
+    let track_width = (area.width as usize).saturating_sub(50).max(10);
+    let filled_chars = if total > 1 {
+        (idx as f64 / (total - 1) as f64 * track_width as f64).round() as usize
+    } else {
+        track_width
+    };
+
+    let mut track: Vec<Span> = Vec::new();
+    track.push(Span::styled("◀", Style::default().fg(Color::DarkGray)));
+    for i in 0..track_width {
+        // Map position i → history index
+        let hist_idx = if total > 1 {
+            (i as f64 / (track_width - 1) as f64 * (total - 1) as f64).round() as usize
+        } else {
+            0
+        };
+
+        let has_anomaly = anomaly_positions.contains(&hist_idx);
+        let is_cursor = i == filled_chars;
+
+        if is_cursor {
+            track.push(Span::styled("●", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
+        } else if has_anomaly {
+            track.push(Span::styled("X", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)));
+        } else if i < filled_chars {
+            track.push(Span::styled("─", Style::default().fg(Color::Blue)));
+        } else {
+            track.push(Span::styled("─", Style::default().fg(Color::DarkGray)));
+        }
+    }
+    track.push(Span::styled("▶", Style::default().fg(Color::DarkGray)));
+
+    // --- Assemble the full line ---
+    let mut spans: Vec<Span> = vec![
+        Span::styled(" PAUSED ", Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::raw(" "),
+        Span::styled(format!("[{}]", time_offset_str), Style::default().fg(Color::Cyan)),
+        Span::raw("  "),
+    ];
+    spans.extend(track);
+    spans.push(Span::raw("  "));
+    spans.push(Span::styled(
+        format!("CPU:{:>2}% MEM:{:>2}%", cpu_pct, mem_pct),
+        Style::default().fg(Color::Gray),
+    ));
+    spans.push(Span::raw("  "));
+    spans.push(Span::styled("[Space: resume]", Style::default().fg(Color::DarkGray)));
+
+    let line = Line::from(spans);
+    frame.render_widget(
+        Paragraph::new(line).style(Style::default().bg(Color::Rgb(20, 20, 40))),
+        area,
+    );
 }
 
 // ---------------------------------------------------------------------------

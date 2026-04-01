@@ -250,6 +250,84 @@ pub struct SystemSnapshot {
     pub threads: Vec<ThreadInfo>,
 }
 
+impl SystemSnapshot {
+    /// Build a minimal synthetic snapshot from a `HistoryPoint` so the UI can
+    /// render historical data while paused.  Fields that aren't stored in the
+    /// history are left as zero / empty / None.
+    pub fn from_history_point(point: &crate::history::HistoryPoint) -> Self {
+        let processes: Vec<ProcessInfo> = point.top_processes.iter()
+            .map(|(pid, name, cpu, mem)| ProcessInfo {
+                pid: *pid,
+                name: name.clone(),
+                cpu_percent: *cpu,
+                mem_bytes: *mem,
+                user: String::new(),
+                disk_read: 0,
+                disk_write: 0,
+                parent_pid: None,
+                runtime: None,
+                service: None,
+                listening_ports: Vec::new(),
+            })
+            .collect();
+
+        // Build a single pseudo-core showing the overall CPU total
+        let cpu_usage_per_core = vec![CpuCoreInfo {
+            usage: point.cpu_total,
+            frequency_mhz: 0,
+        }];
+
+        // Network stats if rates are non-zero
+        let network = if point.net_recv_rate > 0 || point.net_sent_rate > 0 {
+            Some(NetworkStats {
+                interface: String::new(),
+                bytes_sent: 0,
+                bytes_recv: 0,
+                sent_per_sec: point.net_sent_rate,
+                recv_per_sec: point.net_recv_rate,
+            })
+        } else {
+            None
+        };
+
+        Self {
+            cpu_usage_per_core,
+            cpu_usage_total: point.cpu_total,
+            cpu_user_pct: 0.0,
+            cpu_system_pct: 0.0,
+            cpu_idle_pct: 0.0,
+            cpu_temp: None,
+            cpu_history: Vec::new(),
+            cpu_per_core_history: Vec::new(),
+            throttled: false,
+            cpu_freq_current: None,
+            cpu_freq_max: None,
+            mem_total: point.mem_total,
+            mem_used: point.mem_used,
+            swap_total: 0,
+            swap_used: 0,
+            mem_breakdown: None,
+            mem_pressure_level: 100,
+            load_avg: (0.0, 0.0, 0.0),
+            uptime: 0,
+            total_processes: processes.len(),
+            total_threads: 0,
+            network,
+            net_apps: Vec::new(),
+            net_recv_history: Vec::new(),
+            net_sent_history: Vec::new(),
+            disk_io: None,
+            disk_latency: None,
+            battery: None,
+            volumes: Vec::new(),
+            gpu: None,
+            processes,
+            process_diff: ProcessDiff::default(),
+            threads: Vec::new(),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Monitor
 // ---------------------------------------------------------------------------
