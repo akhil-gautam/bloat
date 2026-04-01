@@ -135,6 +135,8 @@ pub struct SystemSnapshot {
     // Network
     pub network: Option<NetworkStats>,
     pub net_apps: Vec<NetAppInfo>,
+    pub net_recv_history: Vec<u64>,
+    pub net_sent_history: Vec<u64>,
 
     // Disk I/O
     pub disk_io: Option<DiskIoStats>,
@@ -180,6 +182,10 @@ pub struct SystemMonitor {
 
     // Per-core CPU history (last 60 readings per core)
     per_core_history: Vec<VecDeque<f32>>,
+
+    // Network bandwidth history (last 60 per-second readings)
+    net_recv_history: VecDeque<u64>,
+    net_sent_history: VecDeque<u64>,
 
     // Cached slow data (refreshed every few seconds)
     cached_battery: Option<BatteryInfo>,
@@ -231,6 +237,8 @@ impl SystemMonitor {
             prev_disk_time: now,
             cpu_history: Vec::new(),
             per_core_history: Vec::new(),
+            net_recv_history: VecDeque::new(),
+            net_sent_history: VecDeque::new(),
             cached_battery: None,
             cached_mem_breakdown: None,
             cached_mem_pressure_level: 100,
@@ -424,6 +432,20 @@ impl SystemMonitor {
             self.prev_net_time = now;
         }
 
+        // Push network rates into history deques (cap at 60)
+        let (recv_per_sec, sent_per_sec) = network
+            .as_ref()
+            .map(|n| (n.recv_per_sec, n.sent_per_sec))
+            .unwrap_or((0, 0));
+        self.net_recv_history.push_back(recv_per_sec);
+        if self.net_recv_history.len() > 60 {
+            self.net_recv_history.pop_front();
+        }
+        self.net_sent_history.push_back(sent_per_sec);
+        if self.net_sent_history.len() > 60 {
+            self.net_sent_history.pop_front();
+        }
+
         // Disk I/O
         let elapsed_disk = now.duration_since(self.prev_disk_time).as_secs_f64().max(0.001);
         let (total_read, total_write) = self
@@ -482,6 +504,8 @@ impl SystemMonitor {
             total_processes,
             total_threads,
             network,
+            net_recv_history: self.net_recv_history.iter().copied().collect(),
+            net_sent_history: self.net_sent_history.iter().copied().collect(),
             disk_io,
             battery: self.cached_battery.clone(),
             volumes,

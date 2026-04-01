@@ -128,6 +128,15 @@ fn draw_anomaly_bar(
                     Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
                 ));
             }
+            AnomalyEvent::NetworkSpike { direction, bytes_per_sec, avg } => {
+                let dir_arrow = if direction == "download" { "▼" } else { "▲" };
+                let mib = *bytes_per_sec / (1024 * 1024);
+                let avg_mib = *avg / (1024 * 1024);
+                spans.push(Span::styled(
+                    format!("⚠ Network spike: {} {} MiB/s (avg {} MiB/s)", dir_arrow, mib, avg_mib),
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                ));
+            }
         }
     }
 
@@ -150,8 +159,10 @@ fn draw_top_panels(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
 }
 
 fn draw_left_column(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
-    // Sub-rows: CPU, Network (with per-app), Disk I/O, GPU
-    let net_height = 3 + snap.net_apps.len().min(6) as u16; // header + apps
+    // Sub-rows: CPU, Network (with per-app + sparklines), Disk I/O, GPU
+    // +2 for the sparkline row when network data is available
+    let sparkline_extra: u16 = if snap.network.is_some() && !snap.net_recv_history.is_empty() { 1 } else { 0 };
+    let net_height = 3 + snap.net_apps.len().min(6) as u16 + sparkline_extra; // header + apps + sparkline
     let sub = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -672,6 +683,55 @@ fn draw_network_section(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
             Span::styled("▼ ", Style::default().fg(Color::Yellow)),
             Span::styled(format!("{}/s", format_size(net.recv_per_sec)), Style::default().fg(Color::Yellow)),
         ]));
+
+        // Sparkline row: download (yellow) + upload (green)
+        if !snap.net_recv_history.is_empty() || !snap.net_sent_history.is_empty() {
+            let blocks = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+            let sparkline_chars = |history: &[u64], max_val: u64, width: usize| -> Vec<char> {
+                let data_count = history.len().min(width);
+                let pad_count = width.saturating_sub(data_count);
+                let mut chars = vec!['·'; pad_count];
+                let start = history.len().saturating_sub(width);
+                for &v in &history[start..] {
+                    let ch = if max_val == 0 || v == 0 {
+                        '·'
+                    } else {
+                        let ratio = (v as f64 / max_val as f64).min(1.0);
+                        let idx = (ratio * 7.0).round() as usize;
+                        blocks[idx]
+                    };
+                    chars.push(ch);
+                }
+                chars
+            };
+
+            // Calculate half-width for each sparkline
+            let half_width = (inner.width as usize).saturating_sub(6) / 2; // leave room for "▼ " and "▲ " labels
+            let half_width = half_width.max(4);
+
+            let recv_max = snap.net_recv_history.iter().copied().max().unwrap_or(1).max(1);
+            let sent_max = snap.net_sent_history.iter().copied().max().unwrap_or(1).max(1);
+
+            let recv_chars = sparkline_chars(&snap.net_recv_history, recv_max, half_width);
+            let sent_chars = sparkline_chars(&snap.net_sent_history, sent_max, half_width);
+
+            let mut sparkline_spans: Vec<Span> = Vec::new();
+            sparkline_spans.push(Span::styled("▼ ", Style::default().fg(Color::Yellow)));
+            for ch in &recv_chars {
+                sparkline_spans.push(Span::styled(
+                    ch.to_string(),
+                    Style::default().fg(Color::Yellow),
+                ));
+            }
+            sparkline_spans.push(Span::styled("  ▲ ", Style::default().fg(Color::Green)));
+            for ch in &sent_chars {
+                sparkline_spans.push(Span::styled(
+                    ch.to_string(),
+                    Style::default().fg(Color::Green),
+                ));
+            }
+            lines.push(Line::from(sparkline_spans));
+        }
     }
 
     // Per-app network usage

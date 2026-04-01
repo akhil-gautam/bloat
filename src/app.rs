@@ -964,6 +964,8 @@ pub fn run(mut terminal: DefaultTerminal, mut app: App) -> std::io::Result<()> {
                     .map(|p| (p.pid, p.name.clone(), p.cpu_percent, p.mem_bytes))
                     .collect(),
                 anomalies: Vec::new(),
+                net_recv_rate: snap.network.as_ref().map_or(0, |n| n.recv_per_sec),
+                net_sent_rate: snap.network.as_ref().map_or(0, |n| n.sent_per_sec),
             };
             app.history.record(point);
         }

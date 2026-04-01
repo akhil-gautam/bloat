@@ -6,6 +6,7 @@ pub enum AnomalyEvent {
     CpuSpike { value: f32, threshold: f32 },
     MemoryJump { delta_bytes: u64 },
     NewHeavyProcess { pid: u32, name: String, cpu: f32 },
+    NetworkSpike { direction: String, bytes_per_sec: u64, avg: u64 },
 }
 
 #[derive(Clone, Debug)]
@@ -16,6 +17,8 @@ pub struct HistoryPoint {
     pub mem_total: u64,
     pub top_processes: Vec<(u32, String, f32, u64)>,
     pub anomalies: Vec<AnomalyEvent>,
+    pub net_recv_rate: u64,
+    pub net_sent_rate: u64,
 }
 
 pub struct History {
@@ -23,6 +26,8 @@ pub struct History {
     capacity: usize,
     cpu_window: VecDeque<f32>,
     mem_window: VecDeque<u64>,
+    net_recv_window: VecDeque<u64>,
+    net_sent_window: VecDeque<u64>,
 }
 
 impl History {
@@ -32,6 +37,8 @@ impl History {
             capacity,
             cpu_window: VecDeque::new(),
             mem_window: VecDeque::new(),
+            net_recv_window: VecDeque::new(),
+            net_sent_window: VecDeque::new(),
         }
     }
 
@@ -122,6 +129,41 @@ impl History {
                 }
             }
         }
+
+        // --- Network spike detection: current rate > 3x rolling average ---
+        if self.net_recv_window.len() >= 10 {
+            let avg: u64 = self.net_recv_window.iter().sum::<u64>() / self.net_recv_window.len() as u64;
+            if avg > 1024 && point.net_recv_rate > avg * 3 {
+                point.anomalies.push(AnomalyEvent::NetworkSpike {
+                    direction: "download".into(),
+                    bytes_per_sec: point.net_recv_rate,
+                    avg,
+                });
+            }
+        }
+
+        // Update recv window
+        self.net_recv_window.push_back(point.net_recv_rate);
+        if self.net_recv_window.len() > 30 {
+            self.net_recv_window.pop_front();
+        }
+
+        if self.net_sent_window.len() >= 10 {
+            let avg: u64 = self.net_sent_window.iter().sum::<u64>() / self.net_sent_window.len() as u64;
+            if avg > 1024 && point.net_sent_rate > avg * 3 {
+                point.anomalies.push(AnomalyEvent::NetworkSpike {
+                    direction: "upload".into(),
+                    bytes_per_sec: point.net_sent_rate,
+                    avg,
+                });
+            }
+        }
+
+        // Update sent window
+        self.net_sent_window.push_back(point.net_sent_rate);
+        if self.net_sent_window.len() > 30 {
+            self.net_sent_window.pop_front();
+        }
     }
 }
 
@@ -141,6 +183,8 @@ mod tests {
             mem_total,
             top_processes: procs,
             anomalies: Vec::new(),
+            net_recv_rate: 0,
+            net_sent_rate: 0,
         }
     }
 
@@ -203,5 +247,71 @@ mod tests {
             matches!(a, AnomalyEvent::NewHeavyProcess { pid: 999, name, cpu } if name == "ffmpeg" && *cpu > 20.0)
         });
         assert!(has_new_heavy, "Should detect new heavy process 'ffmpeg' at PID 999");
+    }
+
+    fn make_point_with_net(cpu: f32, mem_used: u64, mem_total: u64, recv: u64, sent: u64) -> HistoryPoint {
+        HistoryPoint {
+            timestamp: SystemTime::now(),
+            cpu_total: cpu,
+            mem_used,
+            mem_total,
+            top_processes: vec![],
+            anomalies: Vec::new(),
+            net_recv_rate: recv,
+            net_sent_rate: sent,
+        }
+    }
+
+    #[test]
+    fn test_network_spike_detection_download() {
+        let mut history = History::new(300);
+        // Record 10 baseline points at ~1 MiB/s download
+        let baseline: u64 = 1 * 1024 * 1024; // 1 MiB/s
+        for _ in 0..10 {
+            history.record(make_point_with_net(5.0, 4_000_000_000, 8_000_000_000, baseline, 0));
+        }
+        // Record a spike at 10 MiB/s (> 3x average of ~1 MiB/s)
+        let spike: u64 = 10 * 1024 * 1024;
+        history.record(make_point_with_net(5.0, 4_000_000_000, 8_000_000_000, spike, 0));
+
+        let anomalies = history.latest_anomalies();
+        let has_net_spike = anomalies.iter().any(|a| {
+            matches!(a, AnomalyEvent::NetworkSpike { direction, .. } if direction == "download")
+        });
+        assert!(has_net_spike, "Should detect a download network spike when rate exceeds 3x average");
+    }
+
+    #[test]
+    fn test_network_spike_detection_upload() {
+        let mut history = History::new(300);
+        // Record 10 baseline points at ~1 MiB/s upload
+        let baseline: u64 = 1 * 1024 * 1024;
+        for _ in 0..10 {
+            history.record(make_point_with_net(5.0, 4_000_000_000, 8_000_000_000, 0, baseline));
+        }
+        // Record a spike at 10 MiB/s upload
+        let spike: u64 = 10 * 1024 * 1024;
+        history.record(make_point_with_net(5.0, 4_000_000_000, 8_000_000_000, 0, spike));
+
+        let anomalies = history.latest_anomalies();
+        let has_net_spike = anomalies.iter().any(|a| {
+            matches!(a, AnomalyEvent::NetworkSpike { direction, .. } if direction == "upload")
+        });
+        assert!(has_net_spike, "Should detect an upload network spike when rate exceeds 3x average");
+    }
+
+    #[test]
+    fn test_no_network_spike_below_threshold() {
+        let mut history = History::new(300);
+        // Record 10 baseline points at 512 bytes/s (below 1024 avg threshold)
+        for _ in 0..10 {
+            history.record(make_point_with_net(5.0, 4_000_000_000, 8_000_000_000, 512, 0));
+        }
+        // Even a large jump shouldn't trigger if avg is below 1024
+        history.record(make_point_with_net(5.0, 4_000_000_000, 8_000_000_000, 5000, 0));
+
+        let anomalies = history.latest_anomalies();
+        let has_net_spike = anomalies.iter().any(|a| matches!(a, AnomalyEvent::NetworkSpike { .. }));
+        assert!(!has_net_spike, "Should not detect a network spike when average is below 1 KiB/s");
     }
 }
