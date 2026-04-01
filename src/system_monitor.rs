@@ -337,26 +337,18 @@ impl SystemMonitor {
                 let du = p.disk_usage();
                 (r + du.total_read_bytes, w + du.total_written_bytes)
             });
-        let disk_io = if should_refresh && self.prev_disk_time != now {
-            let read_per_sec =
-                ((total_read.saturating_sub(self.prev_disk_read)) as f64 / elapsed_disk) as u64;
-            let write_per_sec =
-                ((total_write.saturating_sub(self.prev_disk_write)) as f64 / elapsed_disk) as u64;
-            Some(DiskIoStats {
-                read_per_sec,
-                write_per_sec,
-            })
+        // Disk I/O via iostat (more reliable than per-process counters on macOS)
+        let disk_io = if should_refresh {
+            parse_iostat().or(Some(DiskIoStats {
+                read_per_sec: 0,
+                write_per_sec: 0,
+            }))
         } else {
             Some(DiskIoStats {
                 read_per_sec: 0,
                 write_per_sec: 0,
             })
         };
-        if should_refresh {
-            self.prev_disk_read = total_read;
-            self.prev_disk_write = total_write;
-            self.prev_disk_time = now;
-        }
 
         // Volumes
         let volumes: Vec<DiskMount> = self
@@ -544,22 +536,45 @@ fn parse_gpu_info() -> Option<GpuInfo> {
         return None;
     }
 
-    // Try to find GPU name
+    // GPU name from "model" = "Apple M4"
     let name = text
         .lines()
-        .find(|l| l.contains("IOClass") || l.contains("\"model\""))
+        .find(|l| l.contains("\"model\""))
         .and_then(|l| {
-            let start = l.find('"')?;
-            let rest = &l[start + 1..];
-            let end = rest.find('"')?;
-            Some(rest[..end].to_string())
+            // Format: "model" = "Apple M4"
+            let after_eq = l.split('=').nth(1)?;
+            let trimmed = after_eq.trim().trim_matches('"');
+            if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
         })
-        .unwrap_or_else(|| "GPU".to_string());
+        .unwrap_or_else(|| {
+            // Fallback: try system_profiler
+            std::process::Command::new("system_profiler")
+                .arg("SPDisplaysDataType")
+                .output()
+                .ok()
+                .and_then(|o| {
+                    let s = String::from_utf8_lossy(&o.stdout);
+                    s.lines()
+                        .find(|l| l.contains("Chipset Model:"))
+                        .map(|l| l.split(':').nth(1).unwrap_or("GPU").trim().to_string())
+                })
+                .unwrap_or_else(|| "GPU".to_string())
+        });
 
-    // Device Utilization %
+    // Device Utilization % from PerformanceStatistics dict
+    // Format: "Device Utilization %"=13
     let utilization = text.lines().find_map(|l| {
-        if l.contains("Device Utilization %") {
-            l.split('=').nth(1)?.trim().parse::<f32>().ok()
+        if let Some(pos) = l.find("Device Utilization %") {
+            let after = &l[pos..];
+            // Find "=XX" — the value right after the key
+            if let Some(eq) = after.find('=') {
+                let val_str = &after[eq + 1..];
+                // Take digits until non-digit
+                let num: String = val_str.chars().take_while(|c| c.is_ascii_digit()).collect();
+                num.parse::<f32>().ok()
+            } else {
+                None
+            }
         } else {
             None
         }
@@ -768,4 +783,52 @@ fn parse_net_apps() -> Vec<NetAppInfo> {
     result.retain(|a| !a.connections.is_empty());
     result.truncate(20);
     result
+}
+
+// ---------------------------------------------------------------------------
+// Disk I/O via iostat
+// ---------------------------------------------------------------------------
+
+fn parse_iostat() -> Option<DiskIoStats> {
+    // `iostat -d -c 1` gives one snapshot with MB/s for each disk
+    // Format:
+    //               disk0
+    //     KB/t  tps  MB/s
+    //    22.65  187  4.13
+    let output = std::process::Command::new("iostat")
+        .args(["-d", "-c", "1"])
+        .output()
+        .ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Sum MB/s across all disks (every 3rd column in the data row)
+    let lines: Vec<&str> = stdout.lines().collect();
+    if lines.len() < 3 {
+        return None;
+    }
+
+    // The header line tells us column positions, data is the last line
+    let data_line = lines.last()?;
+    let values: Vec<f64> = data_line
+        .split_whitespace()
+        .filter_map(|s| s.parse::<f64>().ok())
+        .collect();
+
+    // Values come in groups of 3: KB/t, tps, MB/s per disk
+    // Sum all MB/s values (index 2, 5, 8, ...)
+    let mut total_mb_s = 0.0;
+    for (i, v) in values.iter().enumerate() {
+        if i % 3 == 2 {
+            total_mb_s += v;
+        }
+    }
+
+    // iostat only gives total throughput, not split read/write in this mode
+    // Use it as read estimate; for write we need a different approach
+    let bytes_per_sec = (total_mb_s * 1024.0 * 1024.0) as u64;
+
+    Some(DiskIoStats {
+        read_per_sec: bytes_per_sec,
+        write_per_sec: 0, // iostat basic mode doesn't split r/w
+    })
 }

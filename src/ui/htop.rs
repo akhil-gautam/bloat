@@ -521,18 +521,20 @@ fn draw_disk_io_section(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
     }
 
     if let Some(ref io) = snap.disk_io {
-        let line = Line::from(vec![
-            Span::styled("R: ", Style::default().fg(Color::Green)),
-            Span::styled(
-                format!("{}/s  ", format_size(io.read_per_sec)),
-                Style::default().fg(Color::White),
-            ),
-            Span::styled("W: ", Style::default().fg(Color::Yellow)),
-            Span::styled(
-                format!("{}/s", format_size(io.write_per_sec)),
-                Style::default().fg(Color::White),
-            ),
-        ]);
+        let total = io.read_per_sec + io.write_per_sec;
+        let line = if io.write_per_sec > 0 {
+            Line::from(vec![
+                Span::styled("R: ", Style::default().fg(Color::Green)),
+                Span::styled(format!("{}/s  ", format_size(io.read_per_sec)), Style::default().fg(Color::White)),
+                Span::styled("W: ", Style::default().fg(Color::Yellow)),
+                Span::styled(format!("{}/s", format_size(io.write_per_sec)), Style::default().fg(Color::White)),
+            ])
+        } else {
+            Line::from(vec![
+                Span::styled("Throughput: ", Style::default().fg(Color::Cyan)),
+                Span::styled(format!("{}/s", format_size(total)), Style::default().fg(Color::White)),
+            ])
+        };
         frame.render_widget(Paragraph::new(line), inner);
     }
 }
