@@ -885,31 +885,28 @@ fn draw_process_section(frame: &mut Frame, snap: &SystemSnapshot, state: &System
                 Color::Reset
             };
 
+            // Fixed column widths matching header: PID=7, USER=12, CPU%=7, MEM=10, R/s=9, W/s=9
             let mut spans = vec![
-                Span::styled(format!(" {:>6}", p.pid), Style::default().fg(Color::DarkGray).bg(bg)),
+                Span::styled(format!(" {:>7}", p.pid), Style::default().fg(Color::DarkGray).bg(bg)),
                 Span::styled("  ", Style::default().bg(bg)),
-                Span::styled(format!("{:<10}", user_display), Style::default().fg(Color::Cyan).bg(bg)),
-                Span::styled("  ", Style::default().bg(bg)),
+                Span::styled(format!("{:<12}", user_display), Style::default().fg(Color::Cyan).bg(bg)),
                 Span::styled(format!("{:>5.1}", p.cpu_percent), Style::default().fg(cpu_color).bg(bg)),
-                Span::styled("  ", Style::default().bg(bg)),
+                Span::styled("    ", Style::default().bg(bg)),
                 Span::styled(
-                    format!("{:>8}", format_size(p.mem_bytes)),
+                    format!("{:>10}", format_size(p.mem_bytes)),
                     Style::default().fg(Color::Magenta).bg(bg),
                 ),
-                Span::styled("  ", Style::default().bg(bg)),
             ];
 
             if wide {
                 spans.push(Span::styled(
-                    format!("{:>6}", format_size(p.disk_read)),
+                    format!("  {:>9}", format_size(p.disk_read)),
                     Style::default().fg(Color::Green).bg(bg),
                 ));
-                spans.push(Span::styled("  ", Style::default().bg(bg)));
                 spans.push(Span::styled(
-                    format!("{:>6}", format_size(p.disk_write)),
+                    format!("  {:>9}", format_size(p.disk_write)),
                     Style::default().fg(Color::Yellow).bg(bg),
                 ));
-                spans.push(Span::styled("  ", Style::default().bg(bg)));
             }
 
             spans.push(Span::styled(name_display, Style::default().fg(Color::White).bg(bg)));
@@ -930,21 +927,20 @@ fn build_header(state: &SystemTabState, wide: bool) -> Line<'static> {
         }
     };
 
+    // Fixed column widths: PID=7, USER=12, CPU%=7, MEM=10, R/s=9, W/s=9
+    let mut s = format!(
+        " {:>7}  {:<12}{:>5}{}  {:>10}",
+        "PID", "USER", "CPU%", arrow(ProcessSort::Cpu), "MEM",
+    );
+    s.push_str(arrow(ProcessSort::Mem));
+
     let mut spans = vec![
-        Span::styled(
-            format!(" {:>6}  {:<10}  {:>5}{}  {:>8}{}",
-                "PID",
-                "USER",
-                "CPU%", arrow(ProcessSort::Cpu),
-                "MEM", arrow(ProcessSort::Mem),
-            ),
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(s, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
     ];
 
     if wide {
         spans.push(Span::styled(
-            format!("  {:>6}  {:>6}", "R/s", "W/s"),
+            format!("  {:>9}  {:>9}", "R/s", "W/s"),
             Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
         ));
     }
