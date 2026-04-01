@@ -106,6 +106,7 @@ pub struct ProcessInfo {
     pub user: String,
     pub disk_read: u64,
     pub disk_write: u64,
+    pub parent_pid: Option<u32>,
 }
 
 /// A full snapshot of system state.
@@ -323,6 +324,7 @@ impl SystemMonitor {
                     user,
                     disk_read: du.read_bytes,
                     disk_write: du.written_bytes,
+                    parent_pid: p.parent().map(|pid| pid.as_u32()),
                 }
             })
             .collect();

@@ -4,7 +4,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::*;
 
 use crate::alerts::{Alert, AlertLevel};
-use crate::app::{ProcessSort, SystemTabState};
+use crate::app::{GroupMode, ProcessSort, SystemTabState};
 use crate::system_monitor::{ProcessInfo, SystemSnapshot};
 use crate::ui::format_size;
 
@@ -825,7 +825,20 @@ fn draw_process_section(frame: &mut Frame, snap: &SystemSnapshot, state: &System
         ProcessSort::Name => "Name",
     };
     let sort_arrow = if state.sort_ascending { "▲" } else { "▼" };
-    let title = format!(" Processes (sorted by {} {}) ", sort_label, sort_arrow);
+
+    // Build title showing mode indicator
+    let mode_suffix = match state.group_mode {
+        GroupMode::None => {
+            if state.tree_mode {
+                " [Tree]".to_string()
+            } else {
+                String::new()
+            }
+        }
+        GroupMode::ByApp => " (grouped by App ▼)".to_string(),
+        GroupMode::ByUser => " (grouped by User ▼)".to_string(),
+    };
+    let title = format!(" Processes (sorted by {} {}{}) ", sort_label, sort_arrow, mode_suffix);
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -918,7 +931,24 @@ fn draw_process_section(frame: &mut Frame, snap: &SystemSnapshot, state: &System
         header_area,
     );
 
-    // Build filtered + sorted process list using fuzzy matching
+    // Dispatch to appropriate rendering mode
+    if state.group_mode != GroupMode::None {
+        draw_grouped_processes(frame, snap, state, list_area, wide);
+    } else if state.tree_mode {
+        draw_tree_processes(frame, snap, state, list_area, wide);
+    } else {
+        draw_flat_processes(frame, snap, state, list_area, wide);
+    }
+}
+
+/// Render processes in flat sorted list (original behavior).
+fn draw_flat_processes(
+    frame: &mut Frame,
+    snap: &SystemSnapshot,
+    state: &SystemTabState,
+    list_area: Rect,
+    wide: bool,
+) {
     let matcher = SkimMatcherV2::default();
     let mut filtered_with_score: Vec<(i64, &ProcessInfo)> = snap
         .processes
@@ -932,20 +962,15 @@ fn draw_process_section(frame: &mut Frame, snap: &SystemSnapshot, state: &System
         })
         .collect();
 
-    // When filter is active, sort by fuzzy score (best match first) as primary key.
-    // Then apply user's selected sort as secondary (or primary when no filter).
     if !state.filter.is_empty() {
-        // Primary: fuzzy score descending; secondary: user sort
         filtered_with_score.sort_by(|(score_a, a), (score_b, b)| {
-            let score_cmp = score_b.cmp(score_a); // higher score = better match
+            let score_cmp = score_b.cmp(score_a);
             if score_cmp != std::cmp::Ordering::Equal {
                 return score_cmp;
             }
-            // Tiebreak by user sort
             secondary_sort_cmp(a, b, state)
         });
     } else {
-        // No filter: sort purely by user selection
         filtered_with_score.sort_by(|(_, a), (_, b)| secondary_sort_cmp(a, b, state));
     }
 
@@ -962,66 +987,283 @@ fn draw_process_section(frame: &mut Frame, snap: &SystemSnapshot, state: &System
         .iter()
         .enumerate()
         .take(max_rows)
-        .map(|(idx, p)| {
+        .map(|(idx, p)| build_process_list_item(p, "", idx, state.selected_process, wide, cmd_max))
+        .collect();
+
+    frame.render_widget(List::new(items), list_area);
+}
+
+/// Render processes as a tree (parent-child hierarchy).
+fn draw_tree_processes(
+    frame: &mut Frame,
+    snap: &SystemSnapshot,
+    state: &SystemTabState,
+    list_area: Rect,
+    wide: bool,
+) {
+    use std::collections::{HashMap, HashSet};
+
+    // Build pid set for fast lookup
+    let pid_set: HashSet<u32> = snap.processes.iter().map(|p| p.pid).collect();
+
+    // Build children map: parent_pid -> Vec<&ProcessInfo>
+    let mut children: HashMap<u32, Vec<&ProcessInfo>> = HashMap::new();
+    let mut roots: Vec<&ProcessInfo> = Vec::new();
+
+    for p in &snap.processes {
+        match p.parent_pid {
+            Some(ppid) if pid_set.contains(&ppid) => {
+                children.entry(ppid).or_default().push(p);
+            }
+            _ => {
+                roots.push(p);
+            }
+        }
+    }
+
+    // Sort roots and children by CPU descending
+    roots.sort_by(|a, b| b.cpu_percent.partial_cmp(&a.cpu_percent).unwrap_or(std::cmp::Ordering::Equal));
+    for v in children.values_mut() {
+        v.sort_by(|a, b| b.cpu_percent.partial_cmp(&a.cpu_percent).unwrap_or(std::cmp::Ordering::Equal));
+    }
+
+    // Flatten tree into (prefix, &ProcessInfo) pairs
+    let mut flat: Vec<(String, &ProcessInfo)> = Vec::new();
+    flatten_tree(&roots, &children, String::new(), &mut flat);
+
+    let max_rows = list_area.height as usize;
+    let cmd_max = if wide {
+        (list_area.width as usize).saturating_sub(55)
+    } else {
+        (list_area.width as usize).saturating_sub(35)
+    };
+
+    let items: Vec<ListItem> = flat
+        .iter()
+        .enumerate()
+        .take(max_rows)
+        .map(|(idx, (prefix, p))| build_process_list_item(p, prefix, idx, state.selected_process, wide, cmd_max))
+        .collect();
+
+    frame.render_widget(List::new(items), list_area);
+}
+
+/// Recursively flatten the process tree with tree-drawing characters.
+fn flatten_tree<'a>(
+    nodes: &[&'a ProcessInfo],
+    children: &std::collections::HashMap<u32, Vec<&'a ProcessInfo>>,
+    prefix: String,
+    out: &mut Vec<(String, &'a ProcessInfo)>,
+) {
+    let count = nodes.len();
+    for (i, node) in nodes.iter().enumerate() {
+        let is_last = i + 1 == count;
+        let connector = if is_last { "└── " } else { "├── " };
+        let my_prefix = format!("{}{}", prefix, connector);
+        out.push((my_prefix, node));
+
+        if let Some(kids) = children.get(&node.pid) {
+            let child_prefix = if is_last {
+                format!("{}    ", prefix)
+            } else {
+                format!("{}│   ", prefix)
+            };
+            flatten_tree(kids, children, child_prefix, out);
+        }
+    }
+}
+
+/// Aggregated group entry for group-mode display.
+struct GroupEntry {
+    display_name: String,
+    total_cpu: f32,
+    total_mem: u64,
+    count: usize,
+}
+
+/// Render processes grouped by app name or user.
+fn draw_grouped_processes(
+    frame: &mut Frame,
+    snap: &SystemSnapshot,
+    state: &SystemTabState,
+    list_area: Rect,
+    wide: bool,
+) {
+    use std::collections::HashMap;
+
+    let groups: Vec<GroupEntry> = match state.group_mode {
+        GroupMode::ByApp => {
+            let mut map: HashMap<String, GroupEntry> = HashMap::new();
+            for p in &snap.processes {
+                let key = normalize_app_name(&p.name);
+                let e = map.entry(key.clone()).or_insert(GroupEntry {
+                    display_name: key,
+                    total_cpu: 0.0,
+                    total_mem: 0,
+                    count: 0,
+                });
+                e.total_cpu += p.cpu_percent;
+                e.total_mem += p.mem_bytes;
+                e.count += 1;
+            }
+            let mut v: Vec<GroupEntry> = map.into_values().collect();
+            v.sort_by(|a, b| b.total_cpu.partial_cmp(&a.total_cpu).unwrap_or(std::cmp::Ordering::Equal));
+            v
+        }
+        GroupMode::ByUser => {
+            let mut map: HashMap<String, GroupEntry> = HashMap::new();
+            for p in &snap.processes {
+                let key = if p.user.is_empty() { "unknown".to_string() } else { p.user.clone() };
+                let e = map.entry(key.clone()).or_insert(GroupEntry {
+                    display_name: key,
+                    total_cpu: 0.0,
+                    total_mem: 0,
+                    count: 0,
+                });
+                e.total_cpu += p.cpu_percent;
+                e.total_mem += p.mem_bytes;
+                e.count += 1;
+            }
+            let mut v: Vec<GroupEntry> = map.into_values().collect();
+            v.sort_by(|a, b| b.total_cpu.partial_cmp(&a.total_cpu).unwrap_or(std::cmp::Ordering::Equal));
+            v
+        }
+        GroupMode::None => Vec::new(),
+    };
+
+    let max_rows = list_area.height as usize;
+    let cmd_max = if wide {
+        (list_area.width as usize).saturating_sub(55)
+    } else {
+        (list_area.width as usize).saturating_sub(35)
+    };
+
+    let items: Vec<ListItem> = groups
+        .iter()
+        .enumerate()
+        .take(max_rows)
+        .map(|(idx, g)| {
             let is_selected = idx == state.selected_process;
-            let cpu_color = if p.cpu_percent > 80.0 {
+            let bg = if is_selected { Color::Rgb(60, 60, 80) } else { Color::Reset };
+
+            let cpu_color = if g.total_cpu > 80.0 {
                 Color::Red
-            } else if p.cpu_percent > 30.0 {
+            } else if g.total_cpu > 30.0 {
                 Color::Yellow
             } else {
                 Color::White
             };
 
-            let name_display = if p.name.len() > cmd_max {
-                &p.name[..cmd_max]
+            let name_label = format!("{} ({} procs)", g.display_name, g.count);
+            let name_truncated = if name_label.len() > cmd_max + 20 {
+                name_label[..cmd_max + 20].to_string()
             } else {
-                &p.name
+                name_label
             };
 
-            let user_display = if p.user.len() > 10 {
-                &p.user[..10]
-            } else {
-                &p.user
-            };
-
-            let bg = if is_selected {
-                Color::Rgb(60, 60, 80)
-            } else {
-                Color::Reset
-            };
-
-            // Fixed column widths matching header: PID=7, USER=12, CPU%=7, MEM=10, R/s=9, W/s=9
-            let mut spans = vec![
-                Span::styled(format!(" {:>7}", p.pid), Style::default().fg(Color::DarkGray).bg(bg)),
-                Span::styled("  ", Style::default().bg(bg)),
-                Span::styled(format!("{:<12}", user_display), Style::default().fg(Color::Cyan).bg(bg)),
-                Span::styled(format!("{:>5.1}", p.cpu_percent), Style::default().fg(cpu_color).bg(bg)),
+            let spans = vec![
+                Span::styled(format!("  {:>7}  ", ""), Style::default().fg(Color::DarkGray).bg(bg)),
+                Span::styled(format!("{:<12}", ""), Style::default().fg(Color::Cyan).bg(bg)),
+                Span::styled(format!("{:>5.1}", g.total_cpu), Style::default().fg(cpu_color).bg(bg)),
                 Span::styled("    ", Style::default().bg(bg)),
                 Span::styled(
-                    format!("{:>10}", format_size(p.mem_bytes)),
+                    format!("{:>10}", format_size(g.total_mem)),
                     Style::default().fg(Color::Magenta).bg(bg),
                 ),
+                Span::styled("  ", Style::default().bg(bg)),
+                Span::styled(name_truncated, Style::default().fg(Color::White).bg(bg)),
             ];
-
-            if wide {
-                spans.push(Span::styled(
-                    format!("  {:>9}", format_size(p.disk_read)),
-                    Style::default().fg(Color::Green).bg(bg),
-                ));
-                spans.push(Span::styled(
-                    format!("  {:>9}", format_size(p.disk_write)),
-                    Style::default().fg(Color::Yellow).bg(bg),
-                ));
-            }
-
-            spans.push(Span::styled("  ", Style::default().bg(bg)));
-            spans.push(Span::styled(name_display, Style::default().fg(Color::White).bg(bg)));
 
             ListItem::new(Line::from(spans))
         })
         .collect();
 
     frame.render_widget(List::new(items), list_area);
+}
+
+/// Normalize an app name by stripping common macOS helper suffixes.
+fn normalize_app_name(name: &str) -> String {
+    let suffixes = [
+        " Helper (Renderer)",
+        " Helper (GPU)",
+        " Helper (Plugin)",
+        " Helper",
+        " (Renderer)",
+        " (GPU)",
+        " Renderer",
+        " GPU",
+    ];
+    let mut result = name.to_string();
+    for suffix in &suffixes {
+        if let Some(stripped) = result.strip_suffix(suffix) {
+            result = stripped.to_string();
+            break;
+        }
+    }
+    result
+}
+
+/// Build a single ListItem for a process row (used in flat and tree modes).
+fn build_process_list_item<'a>(
+    p: &ProcessInfo,
+    prefix: &str,
+    idx: usize,
+    selected: usize,
+    wide: bool,
+    cmd_max: usize,
+) -> ListItem<'a> {
+    let is_selected = idx == selected;
+    let cpu_color = if p.cpu_percent > 80.0 {
+        Color::Red
+    } else if p.cpu_percent > 30.0 {
+        Color::Yellow
+    } else {
+        Color::White
+    };
+
+    // Name with tree prefix
+    let prefixed_name = format!("{}{}", prefix, p.name);
+    let name_display = if prefixed_name.len() > cmd_max {
+        prefixed_name[..cmd_max].to_string()
+    } else {
+        prefixed_name
+    };
+
+    let user_display = if p.user.len() > 10 {
+        p.user[..10].to_string()
+    } else {
+        p.user.clone()
+    };
+
+    let bg = if is_selected { Color::Rgb(60, 60, 80) } else { Color::Reset };
+
+    let mut spans = vec![
+        Span::styled(format!(" {:>7}", p.pid), Style::default().fg(Color::DarkGray).bg(bg)),
+        Span::styled("  ", Style::default().bg(bg)),
+        Span::styled(format!("{:<12}", user_display), Style::default().fg(Color::Cyan).bg(bg)),
+        Span::styled(format!("{:>5.1}", p.cpu_percent), Style::default().fg(cpu_color).bg(bg)),
+        Span::styled("    ", Style::default().bg(bg)),
+        Span::styled(
+            format!("{:>10}", format_size(p.mem_bytes)),
+            Style::default().fg(Color::Magenta).bg(bg),
+        ),
+    ];
+
+    if wide {
+        spans.push(Span::styled(
+            format!("  {:>9}", format_size(p.disk_read)),
+            Style::default().fg(Color::Green).bg(bg),
+        ));
+        spans.push(Span::styled(
+            format!("  {:>9}", format_size(p.disk_write)),
+            Style::default().fg(Color::Yellow).bg(bg),
+        ));
+    }
+
+    spans.push(Span::styled("  ", Style::default().bg(bg)));
+    spans.push(Span::styled(name_display, Style::default().fg(Color::White).bg(bg)));
+
+    ListItem::new(Line::from(spans))
 }
 
 /// Compare two processes according to the user's selected sort key.

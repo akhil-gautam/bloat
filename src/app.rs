@@ -45,6 +45,13 @@ pub enum ProcessSort {
     Name,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GroupMode {
+    None,
+    ByApp,
+    ByUser,
+}
+
 pub struct SystemTabState {
     pub sort_by: ProcessSort,
     pub sort_ascending: bool,
@@ -53,6 +60,8 @@ pub struct SystemTabState {
     pub selected_process: usize,
     pub confirm_kill: bool,
     pub show_diff: bool,
+    pub tree_mode: bool,
+    pub group_mode: GroupMode,
 }
 
 impl SystemTabState {
@@ -65,6 +74,8 @@ impl SystemTabState {
             selected_process: 0,
             confirm_kill: false,
             show_diff: false,
+            tree_mode: false,
+            group_mode: GroupMode::None,
         }
     }
 }
@@ -740,6 +751,18 @@ impl App {
             // Toggle diff mode
             KeyCode::Char('d') => {
                 self.system_tab.show_diff = !self.system_tab.show_diff;
+            }
+            // Toggle tree mode
+            KeyCode::Char('t') => {
+                self.system_tab.tree_mode = !self.system_tab.tree_mode;
+            }
+            // Cycle group mode: None -> ByApp -> ByUser -> None
+            KeyCode::Char('g') => {
+                self.system_tab.group_mode = match self.system_tab.group_mode {
+                    GroupMode::None => GroupMode::ByApp,
+                    GroupMode::ByApp => GroupMode::ByUser,
+                    GroupMode::ByUser => GroupMode::None,
+                };
             }
             // Process navigation
             KeyCode::Char('j') | KeyCode::Down => {
