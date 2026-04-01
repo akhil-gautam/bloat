@@ -245,6 +245,7 @@ pub struct App {
     pub sys_snapshot: Option<crate::system_monitor::SystemSnapshot>,
     pub system_tab: SystemTabState,
     pub alert_engine: crate::alerts::AlertEngine,
+    pub history: crate::history::History,
 }
 
 impl App {
@@ -273,6 +274,7 @@ impl App {
             sys_snapshot: None,
             system_tab: SystemTabState::new(),
             alert_engine: crate::alerts::AlertEngine::new(),
+            history: crate::history::History::new(300),
         }
     }
 
@@ -926,6 +928,21 @@ pub fn run(mut terminal: DefaultTerminal, mut app: App) -> std::io::Result<()> {
             let snap = app.sys_monitor.snapshot(std::time::Duration::from_secs(1));
             app.alert_engine.update(snap.cpu_usage_total, snap.mem_used, snap.mem_total);
             app.sys_snapshot = Some(snap);
+        }
+
+        // Record history point for the System tab
+        if let Some(ref snap) = app.sys_snapshot {
+            let point = crate::history::HistoryPoint {
+                timestamp: std::time::SystemTime::now(),
+                cpu_total: snap.cpu_usage_total,
+                mem_used: snap.mem_used,
+                mem_total: snap.mem_total,
+                top_processes: snap.processes.iter().take(10)
+                    .map(|p| (p.pid, p.name.clone(), p.cpu_percent, p.mem_bytes))
+                    .collect(),
+                anomalies: Vec::new(),
+            };
+            app.history.record(point);
         }
 
         terminal.draw(|frame| crate::ui::draw(frame, &app))?;

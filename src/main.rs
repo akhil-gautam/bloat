@@ -2,6 +2,7 @@ mod alerts;
 mod analyzer;
 mod app;
 mod cleaner;
+mod history;
 mod rules;
 mod scanner;
 mod system_monitor;

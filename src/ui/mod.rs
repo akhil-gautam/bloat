@@ -45,7 +45,7 @@ fn draw_main(frame: &mut Frame, app: &App) {
         Tab::Logs => logs::draw(frame, app, chunks[1]),
         Tab::System => {
             if let Some(ref snap) = app.sys_snapshot {
-                htop::draw(frame, snap, &app.system_tab, &app.alert_engine.alerts, chunks[1]);
+                htop::draw(frame, snap, &app.system_tab, &app.alert_engine.alerts, &app.history, chunks[1]);
             } else {
                 let p = Paragraph::new("Loading system stats...")
                     .alignment(Alignment::Center)

@@ -17,12 +17,17 @@ pub fn draw(
     snap: &SystemSnapshot,
     state: &SystemTabState,
     alerts: &[Alert],
+    history: &crate::history::History,
     area: Rect,
 ) {
     // Determine whether we need an alert bar (1 line tall)
     let has_critical = alerts.iter().any(|a| a.level == AlertLevel::Critical);
     let has_warning = alerts.iter().any(|a| a.level == AlertLevel::Warning);
     let alert_height: u16 = if has_critical || has_warning { 1 } else { 0 };
+
+    // Determine whether we need an anomaly indicator line
+    let latest_anomalies = history.latest_anomalies();
+    let anomaly_height: u16 = if latest_anomalies.is_empty() { 0 } else { 1 };
 
     // If diff mode is active, reserve space for diff panel above process list
     let diff_height: u16 = if state.show_diff { 5 } else { 0 };
@@ -32,6 +37,7 @@ pub fn draw(
         .constraints([
             Constraint::Length(alert_height),     // Alert bar (0 when no alerts)
             Constraint::Min(12),                  // Top panels
+            Constraint::Length(anomaly_height),   // Anomaly indicator (0 when none)
             Constraint::Length(diff_height),      // Diff overlay (0 when hidden)
             Constraint::Min(8),                   // Process list
         ])
@@ -43,10 +49,16 @@ pub fn draw(
     }
 
     draw_top_panels(frame, snap, rows[1]);
-    if state.show_diff {
-        draw_diff_panel(frame, snap, rows[2]);
+
+    // Render anomaly indicators between top panels and process list
+    if anomaly_height > 0 {
+        draw_anomaly_bar(frame, &latest_anomalies, rows[2]);
     }
-    draw_process_section(frame, snap, state, rows[3]);
+
+    if state.show_diff {
+        draw_diff_panel(frame, snap, rows[3]);
+    }
+    draw_process_section(frame, snap, state, rows[4]);
 }
 
 // ---------------------------------------------------------------------------
@@ -76,6 +88,51 @@ fn draw_alert_bar(frame: &mut Frame, alerts: &[Alert], is_critical: bool, area: 
         .style(style)
         .alignment(Alignment::Center);
     frame.render_widget(bar, area);
+}
+
+// ---------------------------------------------------------------------------
+// Anomaly indicator bar
+// ---------------------------------------------------------------------------
+
+fn draw_anomaly_bar(
+    frame: &mut Frame,
+    anomalies: &[&crate::history::AnomalyEvent],
+    area: Rect,
+) {
+    use crate::history::AnomalyEvent;
+
+    let mut spans: Vec<Span> = Vec::new();
+    spans.push(Span::raw(" "));
+
+    for (i, anomaly) in anomalies.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled("  |  ", Style::default().fg(Color::DarkGray)));
+        }
+        match anomaly {
+            AnomalyEvent::CpuSpike { value, threshold } => {
+                spans.push(Span::styled(
+                    format!("! CPU spike: {:.1}% (avg {:.1}%)", value, threshold),
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                ));
+            }
+            AnomalyEvent::MemoryJump { delta_bytes } => {
+                let mib = *delta_bytes / (1024 * 1024);
+                spans.push(Span::styled(
+                    format!("! Memory jump: +{} MiB", mib),
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                ));
+            }
+            AnomalyEvent::NewHeavyProcess { pid, name, cpu } => {
+                spans.push(Span::styled(
+                    format!("! New: {} (PID {}) at {:.0}% CPU", name, pid, cpu),
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                ));
+            }
+        }
+    }
+
+    let line = Line::from(spans);
+    frame.render_widget(Paragraph::new(line), area);
 }
 
 // ---------------------------------------------------------------------------
