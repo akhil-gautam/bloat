@@ -69,6 +69,25 @@ pub struct GpuInfo {
     pub vram_total: Option<u64>,
 }
 
+/// Per-app network usage.
+#[derive(Clone, Debug)]
+pub struct NetAppInfo {
+    pub name: String,
+    pub pid: u32,
+    pub bytes_in: u64,
+    pub bytes_out: u64,
+    pub connections: Vec<ConnectionInfo>,
+}
+
+/// A single network connection.
+#[derive(Clone, Debug)]
+pub struct ConnectionInfo {
+    pub local: String,
+    pub remote: String,
+    pub state: String,
+    pub protocol: String,
+}
+
 /// Per-process information.
 #[derive(Clone, Debug)]
 pub struct ProcessInfo {
@@ -104,6 +123,7 @@ pub struct SystemSnapshot {
 
     // Network
     pub network: Option<NetworkStats>,
+    pub net_apps: Vec<NetAppInfo>,
 
     // Disk I/O
     pub disk_io: Option<DiskIoStats>,
@@ -148,6 +168,7 @@ pub struct SystemMonitor {
     cached_battery: Option<BatteryInfo>,
     cached_mem_breakdown: Option<MemoryBreakdown>,
     cached_gpu: Option<GpuInfo>,
+    cached_net_apps: Vec<NetAppInfo>,
     last_slow_refresh: Instant,
 }
 
@@ -186,6 +207,7 @@ impl SystemMonitor {
             cached_battery: None,
             cached_mem_breakdown: None,
             cached_gpu: None,
+            cached_net_apps: Vec::new(),
             last_slow_refresh: Instant::now()
                 .checked_sub(std::time::Duration::from_secs(10))
                 .unwrap_or(now),
@@ -210,6 +232,7 @@ impl SystemMonitor {
             self.cached_battery = parse_battery();
             self.cached_mem_breakdown = parse_vm_stat();
             self.cached_gpu = parse_gpu_info();
+            self.cached_net_apps = parse_net_apps();
             self.last_slow_refresh = Instant::now();
         }
 
@@ -372,6 +395,7 @@ impl SystemMonitor {
             battery: self.cached_battery.clone(),
             volumes,
             gpu: self.cached_gpu.clone(),
+            net_apps: self.cached_net_apps.clone(),
             processes,
         }
     }
@@ -642,4 +666,106 @@ fn try_ioreg_temp() -> Option<f32> {
     }
 
     None
+}
+
+// ---------------------------------------------------------------------------
+// Per-app network usage (lsof -i + nettop)
+// ---------------------------------------------------------------------------
+
+fn parse_net_apps() -> Vec<NetAppInfo> {
+    let output = match std::process::Command::new("lsof")
+        .args(["-i", "-n", "-P"])
+        .output()
+    {
+        Ok(o) => o,
+        Err(_) => return Vec::new(),
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut apps: HashMap<u32, NetAppInfo> = HashMap::new();
+
+    for line in stdout.lines().skip(1) {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 9 {
+            continue;
+        }
+
+        let name = parts[0].to_string();
+        let pid: u32 = match parts[1].parse() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        let protocol = parts[7].to_string();
+        let conn_str = parts[8];
+
+        let state = parts
+            .get(9)
+            .map(|s| s.trim_matches(|c: char| c == '(' || c == ')').to_string())
+            .unwrap_or_default();
+
+        let (local, remote) = if let Some(arrow) = conn_str.find("->") {
+            (
+                conn_str[..arrow].to_string(),
+                conn_str[arrow + 2..].to_string(),
+            )
+        } else {
+            (conn_str.to_string(), String::new())
+        };
+
+        let entry = apps.entry(pid).or_insert_with(|| NetAppInfo {
+            name: name.clone(),
+            pid,
+            bytes_in: 0,
+            bytes_out: 0,
+            connections: Vec::new(),
+        });
+
+        if entry.connections.len() < 10 {
+            entry.connections.push(ConnectionInfo {
+                local,
+                remote,
+                state,
+                protocol,
+            });
+        }
+    }
+
+    // Try nettop for bandwidth data
+    if let Ok(output) = std::process::Command::new("nettop")
+        .args(["-P", "-x", "-L", "1", "-J", "bytes_in,bytes_out"])
+        .output()
+    {
+        let nettop_out = String::from_utf8_lossy(&output.stdout);
+        for line in nettop_out.lines().skip(1) {
+            let parts: Vec<&str> = line.split(',').collect();
+            if parts.len() < 3 {
+                continue;
+            }
+            let name_pid = parts[0].trim();
+            let pid: u32 = if let Some(dot) = name_pid.rfind('.') {
+                name_pid[dot + 1..].parse().unwrap_or(0)
+            } else {
+                0
+            };
+            if pid == 0 {
+                continue;
+            }
+            let bytes_in: u64 = parts[1].trim().parse().unwrap_or(0);
+            let bytes_out: u64 = parts[2].trim().parse().unwrap_or(0);
+            if let Some(app) = apps.get_mut(&pid) {
+                app.bytes_in = bytes_in;
+                app.bytes_out = bytes_out;
+            }
+        }
+    }
+
+    let mut result: Vec<NetAppInfo> = apps.into_values().collect();
+    result.sort_by(|a, b| {
+        let a_total = a.bytes_in + a.bytes_out + a.connections.len() as u64;
+        let b_total = b.bytes_in + b.bytes_out + b.connections.len() as u64;
+        b_total.cmp(&a_total)
+    });
+    result.retain(|a| !a.connections.is_empty());
+    result.truncate(20);
+    result
 }

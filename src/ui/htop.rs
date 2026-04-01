@@ -38,14 +38,15 @@ fn draw_top_panels(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
 }
 
 fn draw_left_column(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
-    // Sub-rows: CPU, Network, Disk I/O, GPU
+    // Sub-rows: CPU, Network (with per-app), Disk I/O, GPU
+    let net_height = 3 + snap.net_apps.len().min(6) as u16; // header + apps
     let sub = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(4),  // CPU
-            Constraint::Length(3), // Network
-            Constraint::Length(3), // Disk I/O
-            Constraint::Length(3), // GPU
+            Constraint::Min(4),          // CPU
+            Constraint::Length(net_height.max(4)), // Network
+            Constraint::Length(3),        // Disk I/O
+            Constraint::Length(3),        // GPU
         ])
         .split(area);
 
@@ -413,29 +414,93 @@ fn draw_network_section(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
         return;
     }
 
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Overall throughput
     if let Some(ref net) = snap.network {
-        let line = Line::from(vec![
-            Span::styled(
-                format!("{}: ", net.interface),
-                Style::default().fg(Color::Cyan),
-            ),
+        lines.push(Line::from(vec![
+            Span::styled(format!("{}: ", net.interface), Style::default().fg(Color::Cyan)),
             Span::styled("▲ ", Style::default().fg(Color::Green)),
-            Span::styled(
-                format!("{}/s  ", format_size(net.sent_per_sec)),
-                Style::default().fg(Color::Green),
-            ),
+            Span::styled(format!("{}/s  ", format_size(net.sent_per_sec)), Style::default().fg(Color::Green)),
             Span::styled("▼ ", Style::default().fg(Color::Yellow)),
-            Span::styled(
-                format!("{}/s", format_size(net.recv_per_sec)),
-                Style::default().fg(Color::Yellow),
-            ),
-        ]);
-        frame.render_widget(Paragraph::new(line), inner);
+            Span::styled(format!("{}/s", format_size(net.recv_per_sec)), Style::default().fg(Color::Yellow)),
+        ]));
+    }
+
+    // Per-app network usage
+    if !snap.net_apps.is_empty() {
+        lines.push(Line::from(""));
+        let max_apps = (inner.height as usize).saturating_sub(lines.len());
+        for app in snap.net_apps.iter().take(max_apps) {
+            let conns = app.connections.len();
+            let remote_hint = app
+                .connections
+                .first()
+                .and_then(|c| {
+                    if c.remote.is_empty() {
+                        None
+                    } else {
+                        // Show just host part (strip port)
+                        let host = c.remote.split(':').next().unwrap_or(&c.remote);
+                        Some(host.to_string())
+                    }
+                })
+                .unwrap_or_default();
+
+            let extra_remotes = if conns > 1 {
+                format!(" +{}", conns - 1)
+            } else {
+                String::new()
+            };
+
+            let mut spans = vec![
+                Span::styled(
+                    format!("{:<14}", truncate_str(&app.name, 14)),
+                    Style::default().fg(Color::White),
+                ),
+            ];
+
+            if app.bytes_in > 0 || app.bytes_out > 0 {
+                spans.push(Span::styled(
+                    format!("▲{:<8}", format_size(app.bytes_out)),
+                    Style::default().fg(Color::Green),
+                ));
+                spans.push(Span::styled(
+                    format!("▼{:<8}", format_size(app.bytes_in)),
+                    Style::default().fg(Color::Yellow),
+                ));
+            } else {
+                spans.push(Span::styled(
+                    format!("{} conn", conns),
+                    Style::default().fg(Color::DarkGray),
+                ));
+                spans.push(Span::raw("  "));
+            }
+
+            if !remote_hint.is_empty() {
+                spans.push(Span::styled(
+                    format!(" → {}{}", remote_hint, extra_remotes),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+
+            lines.push(Line::from(spans));
+        }
+    } else if snap.network.is_none() {
+        lines.push(Line::from(Span::styled(
+            "No network data",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn truncate_str(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
     } else {
-        frame.render_widget(
-            Paragraph::new(Span::styled("No network interface", Style::default().fg(Color::DarkGray))),
-            inner,
-        );
+        s[..max].to_string()
     }
 }
 
