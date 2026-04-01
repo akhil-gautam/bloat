@@ -1,3 +1,4 @@
+mod alerts;
 mod analyzer;
 mod app;
 mod cleaner;

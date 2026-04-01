@@ -244,6 +244,7 @@ pub struct App {
     pub sys_monitor: crate::system_monitor::SystemMonitor,
     pub sys_snapshot: Option<crate::system_monitor::SystemSnapshot>,
     pub system_tab: SystemTabState,
+    pub alert_engine: crate::alerts::AlertEngine,
 }
 
 impl App {
@@ -271,6 +272,7 @@ impl App {
             sys_monitor: crate::system_monitor::SystemMonitor::new(),
             sys_snapshot: None,
             system_tab: SystemTabState::new(),
+            alert_engine: crate::alerts::AlertEngine::new(),
         }
     }
 
@@ -919,9 +921,10 @@ pub fn run(mut terminal: DefaultTerminal, mut app: App) -> std::io::Result<()> {
             rx = Some(app.start_scan());
         }
 
-        // Refresh system stats when System tab is active
-        if app.tab == Tab::System {
+        // Refresh system stats (always, so alert engine keeps running)
+        {
             let snap = app.sys_monitor.snapshot(std::time::Duration::from_secs(1));
+            app.alert_engine.update(snap.cpu_usage_total, snap.mem_used, snap.mem_total);
             app.sys_snapshot = Some(snap);
         }
 

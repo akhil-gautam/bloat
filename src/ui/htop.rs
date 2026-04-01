@@ -3,6 +3,7 @@ use fuzzy_matcher::skim::SkimMatcherV2;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 
+use crate::alerts::{Alert, AlertLevel};
 use crate::app::{ProcessSort, SystemTabState};
 use crate::system_monitor::{ProcessInfo, SystemSnapshot};
 use crate::ui::format_size;
@@ -11,24 +12,70 @@ use crate::ui::format_size;
 // Public entry point
 // ---------------------------------------------------------------------------
 
-pub fn draw(frame: &mut Frame, snap: &SystemSnapshot, state: &SystemTabState, area: Rect) {
+pub fn draw(
+    frame: &mut Frame,
+    snap: &SystemSnapshot,
+    state: &SystemTabState,
+    alerts: &[Alert],
+    area: Rect,
+) {
+    // Determine whether we need an alert bar (1 line tall)
+    let has_critical = alerts.iter().any(|a| a.level == AlertLevel::Critical);
+    let has_warning = alerts.iter().any(|a| a.level == AlertLevel::Warning);
+    let alert_height: u16 = if has_critical || has_warning { 1 } else { 0 };
+
     // If diff mode is active, reserve space for diff panel above process list
     let diff_height: u16 = if state.show_diff { 5 } else { 0 };
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(alert_height),     // Alert bar (0 when no alerts)
             Constraint::Min(12),                  // Top panels
             Constraint::Length(diff_height),      // Diff overlay (0 when hidden)
             Constraint::Min(8),                   // Process list
         ])
         .split(area);
 
-    draw_top_panels(frame, snap, rows[0]);
-    if state.show_diff {
-        draw_diff_panel(frame, snap, rows[1]);
+    // Render the alert bar if needed
+    if alert_height > 0 {
+        draw_alert_bar(frame, alerts, has_critical, rows[0]);
     }
-    draw_process_section(frame, snap, state, rows[2]);
+
+    draw_top_panels(frame, snap, rows[1]);
+    if state.show_diff {
+        draw_diff_panel(frame, snap, rows[2]);
+    }
+    draw_process_section(frame, snap, state, rows[3]);
+}
+
+// ---------------------------------------------------------------------------
+// Alert bar
+// ---------------------------------------------------------------------------
+
+fn draw_alert_bar(frame: &mut Frame, alerts: &[Alert], is_critical: bool, area: Rect) {
+    let (bg, fg) = if is_critical {
+        (Color::Red, Color::White)
+    } else {
+        (Color::Yellow, Color::Black)
+    };
+
+    let messages: Vec<String> = alerts.iter().map(|a| a.message.clone()).collect();
+    let text = messages.join("  |  ");
+
+    let style = if is_critical {
+        Style::default()
+            .bg(bg)
+            .fg(fg)
+            .add_modifier(Modifier::BOLD | Modifier::RAPID_BLINK)
+    } else {
+        Style::default().bg(bg).fg(fg).add_modifier(Modifier::BOLD)
+    };
+
+    let bar = Paragraph::new(format!(" {text} "))
+        .style(style)
+        .alignment(Alignment::Center);
+    frame.render_widget(bar, area);
 }
 
 // ---------------------------------------------------------------------------
