@@ -211,46 +211,66 @@ fn draw_cpu_sparkline(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
         return;
     }
 
+    // Use blocks where ▂ is minimum for any non-zero value (▁ is invisible on dark bg)
     let blocks = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
     let history = &snap.cpu_history;
-    if history.is_empty() {
+
+    let label = "Hist: ";
+    let label_len = label.len();
+    let chart_width = (area.width as usize).saturating_sub(label_len);
+
+    if chart_width == 0 {
         return;
     }
 
-    let available = area.width as usize;
-    // Take last `available - 10` data points (leave room for label)
-    let label = "Hist: ";
-    let label_len = label.len();
-    let chart_width = available.saturating_sub(label_len);
-
-    let points: Vec<char> = if history.len() <= chart_width {
-        history.iter().map(|&v| {
-            let idx = ((v / 100.0) * 7.0).min(7.0) as usize;
+    // Build sparkline characters from history
+    let value_to_block = |v: f32| -> char {
+        if v < 0.5 {
+            '·' // near-zero shown as dot
+        } else {
+            // Map 0.5-100 to indices 1-7 (skip index 0 = ▁ which is invisible)
+            let idx = ((v / 100.0) * 6.0 + 1.0).min(7.0) as usize;
             blocks[idx]
-        }).collect()
-    } else {
-        let skip = history.len() - chart_width;
-        history[skip..].iter().map(|&v| {
-            let idx = ((v / 100.0) * 7.0).min(7.0) as usize;
-            blocks[idx]
-        }).collect()
+        }
     };
 
-    let chart_str: String = points.iter().collect();
-    let total_cpu = snap.cpu_usage_total;
-    let color = if total_cpu > 80.0 {
-        Color::Red
-    } else if total_cpu > 50.0 {
-        Color::Yellow
-    } else {
-        Color::Green
-    };
+    let mut chart_chars: Vec<Span> = Vec::new();
 
-    let line = Line::from(vec![
-        Span::styled(label, Style::default().fg(Color::Cyan)),
-        Span::styled(chart_str, Style::default().fg(color)),
-    ]);
-    frame.render_widget(Paragraph::new(line), area);
+    // Pad with dots for empty slots at the start
+    let data_count = history.len().min(chart_width);
+    let pad_count = chart_width.saturating_sub(data_count);
+    if pad_count > 0 {
+        chart_chars.push(Span::styled(
+            "·".repeat(pad_count),
+            Style::default().fg(Color::Rgb(50, 50, 50)),
+        ));
+    }
+
+    // Render actual data points
+    let start = if history.len() > chart_width {
+        history.len() - chart_width
+    } else {
+        0
+    };
+    for &v in &history[start..] {
+        let ch = value_to_block(v);
+        let color = if v > 80.0 {
+            Color::Red
+        } else if v > 50.0 {
+            Color::Yellow
+        } else {
+            Color::Green
+        };
+        chart_chars.push(Span::styled(
+            ch.to_string(),
+            Style::default().fg(color),
+        ));
+    }
+
+    let mut spans = vec![Span::styled(label, Style::default().fg(Color::Cyan))];
+    spans.extend(chart_chars);
+
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 // ---------------------------------------------------------------------------

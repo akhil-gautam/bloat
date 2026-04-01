@@ -568,12 +568,78 @@ fn parse_gpu_info() -> Option<GpuInfo> {
 
 /// Get CPU temperature via sysctl (Apple Silicon thermal level as a proxy).
 fn get_cpu_temp_sysctl() -> Option<f32> {
-    // Try sysctl machdep.xcpm.cpu_thermal_level (Intel)
-    let output = std::process::Command::new("sysctl")
+    // Approach 1: ioreg for Apple Silicon — look for "Temperature" in AppleARMIODevice
+    if let Some(temp) = try_ioreg_temp() {
+        return Some(temp);
+    }
+
+    // Approach 2: sysctl machdep.xcpm.cpu_thermal_level (Intel Macs — returns 0-100 level, not °C)
+    if let Ok(output) = std::process::Command::new("sysctl")
         .arg("-n")
         .arg("machdep.xcpm.cpu_thermal_level")
         .output()
+    {
+        let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if let Ok(level) = s.parse::<f32>() {
+            if level > 0.0 {
+                // Thermal level 0-100 → approximate °C (rough mapping)
+                return Some(40.0 + level * 0.6);
+            }
+        }
+    }
+
+    None
+}
+
+fn try_ioreg_temp() -> Option<f32> {
+    // On Apple Silicon, read die temperature from AppleARMIODevice sensors
+    let output = std::process::Command::new("ioreg")
+        .args(["-r", "-n", "AppleARMIODevice", "-w", "0"])
+        .output()
         .ok()?;
-    let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    s.parse::<f32>().ok()
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Look for "die-temperature" or "Temperature" sensor readings
+    // Format varies but often appears as "Temperature" = XX (in fixed-point)
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if trimmed.contains("\"Temperature\"") || trimmed.contains("\"die-temperature\"") {
+            // Try to extract number after "="
+            if let Some(eq_pos) = trimmed.find('=') {
+                let val_str = trimmed[eq_pos + 1..].trim().trim_matches('"');
+                if let Ok(v) = val_str.parse::<f32>() {
+                    // Some sensors report in centi-degrees or milli-degrees
+                    if v > 1000.0 {
+                        return Some(v / 100.0);
+                    } else if v > 200.0 {
+                        return Some(v / 10.0);
+                    } else if v > 0.0 && v < 150.0 {
+                        return Some(v);
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: try to find any temperature-like value from SMC
+    let output2 = std::process::Command::new("ioreg")
+        .args(["-r", "-c", "AppleSMC", "-w", "0"])
+        .output()
+        .ok()?;
+    let stdout2 = String::from_utf8_lossy(&output2.stdout);
+
+    for line in stdout2.lines() {
+        if line.contains("CPU") && line.contains("emperature") {
+            if let Some(eq_pos) = line.find('=') {
+                let val_str = line[eq_pos + 1..].trim().trim_matches('"').trim();
+                if let Ok(v) = val_str.parse::<f32>() {
+                    if v > 0.0 && v < 150.0 {
+                        return Some(v);
+                    }
+                }
+            }
+        }
+    }
+
+    None
 }
