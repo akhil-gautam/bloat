@@ -1,11 +1,12 @@
 pub mod cleanup;
 pub mod explorer;
+pub mod htop;
 pub mod logs;
 pub mod overview;
 
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Tabs},
@@ -42,6 +43,16 @@ fn draw_main(frame: &mut Frame, app: &App) {
         Tab::Explorer => explorer::draw(frame, app, chunks[1]),
         Tab::Cleanup => cleanup::draw(frame, app, chunks[1]),
         Tab::Logs => logs::draw(frame, app, chunks[1]),
+        Tab::System => {
+            if let Some(ref snap) = app.sys_snapshot {
+                htop::draw(frame, snap, chunks[1]);
+            } else {
+                let p = Paragraph::new("Loading system stats...")
+                    .alignment(Alignment::Center)
+                    .style(Style::default().fg(Color::DarkGray));
+                frame.render_widget(p, chunks[1]);
+            }
+        }
     }
 
     draw_status_bar(frame, app, chunks[2]);
@@ -232,6 +243,15 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(Color::DarkGray)
     };
     tab_spans.push(Span::styled(&log_label, log_style));
+    tab_spans.push(Span::raw(" "));
+
+    // System tab
+    let sys_style = if app.tab == Tab::System {
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    tab_spans.push(Span::styled("[5 System]", sys_style));
 
     // Calculate how wide the tab labels are
     let tabs_text: String = tab_spans.iter().map(|s| s.content.to_string()).collect();
@@ -278,7 +298,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         Line::from(vec![
             Span::raw(" "),
-            Span::styled("1-4", key),
+            Span::styled("1-5", key),
             Span::styled(": tabs", dim),
             dot.clone(),
             Span::styled("r", key),

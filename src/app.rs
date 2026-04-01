@@ -28,6 +28,7 @@ pub enum Tab {
     Explorer,
     Cleanup,
     Logs,
+    System,
 }
 
 // ---------------------------------------------------------------------------
@@ -202,6 +203,8 @@ pub struct App {
     pub should_quit: bool,
     pub last_clean_result: Option<Vec<crate::cleaner::CleanResult>>,
     pub logs: Vec<LogEntry>,
+    pub sys_monitor: crate::system_monitor::SystemMonitor,
+    pub sys_snapshot: Option<crate::system_monitor::SystemSnapshot>,
 }
 
 impl App {
@@ -226,6 +229,8 @@ impl App {
             should_quit: false,
             last_clean_result: None,
             logs: Vec::new(),
+            sys_monitor: crate::system_monitor::SystemMonitor::new(),
+            sys_snapshot: None,
         }
     }
 
@@ -323,21 +328,27 @@ impl App {
                 self.tab = Tab::Logs;
                 return;
             }
+            KeyCode::Char('5') => {
+                self.tab = Tab::System;
+                return;
+            }
             KeyCode::Tab => {
                 self.tab = match self.tab {
                     Tab::Overview => Tab::Explorer,
                     Tab::Explorer => Tab::Cleanup,
                     Tab::Cleanup => Tab::Logs,
-                    Tab::Logs => Tab::Overview,
+                    Tab::Logs => Tab::System,
+                    Tab::System => Tab::Overview,
                 };
                 return;
             }
             KeyCode::BackTab => {
                 self.tab = match self.tab {
-                    Tab::Overview => Tab::Logs,
+                    Tab::Overview => Tab::System,
                     Tab::Explorer => Tab::Overview,
                     Tab::Cleanup => Tab::Explorer,
                     Tab::Logs => Tab::Cleanup,
+                    Tab::System => Tab::Logs,
                 };
                 return;
             }
@@ -363,7 +374,8 @@ impl App {
             Tab::Overview => self.on_key_overview(key),
             Tab::Explorer => self.on_key_explorer(key),
             Tab::Cleanup => self.on_key_cleanup(key),
-            Tab::Logs => {} // Logs is read-only
+            Tab::Logs => {}    // read-only
+            Tab::System => {}  // auto-refreshing, read-only
         }
     }
 
@@ -692,6 +704,12 @@ pub fn run(mut terminal: DefaultTerminal, mut app: App) -> std::io::Result<()> {
         // This handles: 'r' key, post-cleanup rescan, post-delete rescan.
         if app.scanning && app.tree.is_none() && rx.is_none() {
             rx = Some(app.start_scan());
+        }
+
+        // Refresh system stats when System tab is active
+        if app.tab == Tab::System {
+            let snap = app.sys_monitor.snapshot(std::time::Duration::from_secs(1));
+            app.sys_snapshot = Some(snap);
         }
 
         terminal.draw(|frame| crate::ui::draw(frame, &app))?;

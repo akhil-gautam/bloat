@@ -3,6 +3,7 @@ mod app;
 mod cleaner;
 mod rules;
 mod scanner;
+mod system_monitor;
 mod tree;
 mod ui;
 
