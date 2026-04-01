@@ -57,7 +57,7 @@ fn draw_folder_select(frame: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // Title
+            Constraint::Length(4),  // Title + hints
             Constraint::Length(1),  // Spacer
             Constraint::Min(0),    // Folder list
             Constraint::Length(1),  // Spacer
@@ -66,12 +66,26 @@ fn draw_folder_select(frame: &mut Frame, app: &App) {
         ])
         .split(area);
 
-    // Title
-    let title = Paragraph::new(Line::from(vec![
-        Span::styled("bloat", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-        Span::styled(" — ", Style::default().fg(Color::DarkGray)),
-        Span::styled("your disk is bloated. let's fix that.", Style::default().fg(Color::DarkGray)),
-    ]))
+    // Title with inline hints
+    let title = Paragraph::new(vec![
+        Line::from(vec![
+            Span::styled("bloat", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(" — ", Style::default().fg(Color::DarkGray)),
+            Span::styled("your disk is bloated. let's fix that.", Style::default().fg(Color::Gray)),
+        ]),
+        Line::from(vec![
+            Span::styled("↑↓", Style::default().fg(Color::Cyan)),
+            Span::styled(" navigate  ", Style::default().fg(Color::Gray)),
+            Span::styled("Space", Style::default().fg(Color::Cyan)),
+            Span::styled(" select  ", Style::default().fg(Color::Gray)),
+            Span::styled("Enter", Style::default().fg(Color::Green)),
+            Span::styled(" scan  ", Style::default().fg(Color::Gray)),
+            Span::styled("a", Style::default().fg(Color::Cyan)),
+            Span::styled(" all  ", Style::default().fg(Color::Gray)),
+            Span::styled("q", Style::default().fg(Color::Red)),
+            Span::styled(" quit", Style::default().fg(Color::Gray)),
+        ]),
+    ])
     .block(Block::default().borders(Borders::ALL));
     frame.render_widget(title, chunks[0]);
 
