@@ -5,7 +5,7 @@ use ratatui::widgets::*;
 
 use crate::alerts::{Alert, AlertLevel};
 use crate::app::{GroupMode, ProcessSort, SystemTabState};
-use crate::system_monitor::{ProcessInfo, SystemSnapshot};
+use crate::system_monitor::{ProcessInfo, SystemSnapshot, ThreadInfo};
 use crate::ui::format_size;
 
 // ---------------------------------------------------------------------------
@@ -1078,7 +1078,7 @@ fn draw_process_section(frame: &mut Frame, snap: &SystemSnapshot, state: &System
     };
     let sort_arrow = if state.sort_ascending { "▲" } else { "▼" };
 
-    // Build title showing mode indicator
+    // Build title showing mode indicator and expand hint
     let mode_suffix = match state.group_mode {
         GroupMode::None => {
             if state.tree_mode {
@@ -1090,7 +1090,12 @@ fn draw_process_section(frame: &mut Frame, snap: &SystemSnapshot, state: &System
         GroupMode::ByApp => " (grouped by App ▼)".to_string(),
         GroupMode::ByUser => " (grouped by User ▼)".to_string(),
     };
-    let title = format!(" Processes (sorted by {} {}{}) ", sort_label, sort_arrow, mode_suffix);
+    let expand_hint = if state.group_mode == GroupMode::None {
+        " | e: expand threads"
+    } else {
+        ""
+    };
+    let title = format!(" Processes (sorted by {} {}{}{}) ", sort_label, sort_arrow, mode_suffix, expand_hint);
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -1193,6 +1198,56 @@ fn draw_process_section(frame: &mut Frame, snap: &SystemSnapshot, state: &System
     }
 }
 
+/// Build ListItems for the thread rows that follow an expanded process.
+fn build_thread_items(threads: &[ThreadInfo], wide: bool, bg: Color) -> Vec<ListItem<'static>> {
+    let _ = wide; // reserved for future column extensions
+    let count = threads.len();
+    threads
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let is_last = i + 1 == count;
+            let connector = if is_last { "    └── " } else { "    ├── " };
+
+            let (state_label, state_color) = if t.state == "running" {
+                ("running", Color::Green)
+            } else {
+                (t.state.as_str(), Color::DarkGray)
+            };
+
+            let cpu_color = if t.cpu_percent > 30.0 {
+                Color::Yellow
+            } else {
+                Color::DarkGray
+            };
+
+            let name_part = if t.name.is_empty() {
+                format!("Thread 0x{:x}", t.tid)
+            } else {
+                format!("Thread 0x{:x} ({})", t.tid, t.name)
+            };
+
+            let spans = vec![
+                Span::styled(connector.to_string(), Style::default().fg(Color::DarkGray).bg(bg)),
+                Span::styled(
+                    format!("{:<30}", name_part),
+                    Style::default().fg(Color::DarkGray).bg(bg),
+                ),
+                Span::styled(
+                    format!("{:>5.1}%", t.cpu_percent),
+                    Style::default().fg(cpu_color).bg(bg),
+                ),
+                Span::styled("  ", Style::default().bg(bg)),
+                Span::styled(
+                    state_label.to_string(),
+                    Style::default().fg(state_color).bg(bg),
+                ),
+            ];
+            ListItem::new(Line::from(spans))
+        })
+        .collect()
+}
+
 /// Render processes in flat sorted list (original behavior).
 fn draw_flat_processes(
     frame: &mut Frame,
@@ -1235,12 +1290,28 @@ fn draw_flat_processes(
         (list_area.width as usize).saturating_sub(35)
     };
 
-    let items: Vec<ListItem> = filtered
-        .iter()
-        .enumerate()
-        .take(max_rows)
-        .map(|(idx, p)| build_process_list_item(p, "", idx, state.selected_process, wide, cmd_max))
-        .collect();
+    let mut items: Vec<ListItem> = Vec::new();
+    let mut visual_idx = 0usize;  // index into the visible rows (including thread rows)
+
+    for p in filtered.iter() {
+        if items.len() >= max_rows {
+            break;
+        }
+        // Process row — visual_idx tracks selection
+        items.push(build_process_list_item(p, "", visual_idx, state.selected_process, wide, cmd_max));
+        visual_idx += 1;
+
+        // Inject thread rows when this process is expanded
+        if state.expanded_pid == Some(p.pid) && !snap.threads.is_empty() {
+            let bg = Color::Reset;
+            let thread_items = build_thread_items(&snap.threads, wide, bg);
+            let remaining = max_rows.saturating_sub(items.len());
+            for t in thread_items.into_iter().take(remaining) {
+                items.push(t);
+                // Thread rows are not selectable, so we don't advance visual_idx
+            }
+        }
+    }
 
     frame.render_widget(List::new(items), list_area);
 }
@@ -1290,12 +1361,26 @@ fn draw_tree_processes(
         (list_area.width as usize).saturating_sub(35)
     };
 
-    let items: Vec<ListItem> = flat
-        .iter()
-        .enumerate()
-        .take(max_rows)
-        .map(|(idx, (prefix, p))| build_process_list_item(p, prefix, idx, state.selected_process, wide, cmd_max))
-        .collect();
+    let mut items: Vec<ListItem> = Vec::new();
+    let mut visual_idx = 0usize;
+
+    for (prefix, p) in flat.iter() {
+        if items.len() >= max_rows {
+            break;
+        }
+        items.push(build_process_list_item(p, prefix, visual_idx, state.selected_process, wide, cmd_max));
+        visual_idx += 1;
+
+        // Inject thread rows when this process is expanded
+        if state.expanded_pid == Some(p.pid) && !snap.threads.is_empty() {
+            let bg = Color::Reset;
+            let thread_items = build_thread_items(&snap.threads, wide, bg);
+            let remaining = max_rows.saturating_sub(items.len());
+            for t in thread_items.into_iter().take(remaining) {
+                items.push(t);
+            }
+        }
+    }
 
     frame.render_widget(List::new(items), list_area);
 }

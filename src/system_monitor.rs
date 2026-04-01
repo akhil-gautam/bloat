@@ -88,6 +88,73 @@ pub struct ConnectionInfo {
     pub protocol: String,
 }
 
+/// Per-thread information fetched via `ps -M`.
+#[derive(Clone, Debug)]
+pub struct ThreadInfo {
+    pub tid: u64,
+    pub cpu_percent: f32,
+    pub state: String,
+    pub name: String,
+}
+
+/// Parse threads for a given PID using `ps -M -p <PID>`.
+/// Returns an empty Vec on any error or if the process no longer exists.
+pub fn get_threads_for_pid(pid: u32) -> Vec<ThreadInfo> {
+    let output = match std::process::Command::new("ps")
+        .args(["-M", "-p", &pid.to_string(), "-o", "tid,pcpu,stat,comm"])
+        .output()
+    {
+        Ok(o) => o,
+        Err(_) => return Vec::new(),
+    };
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut threads = Vec::new();
+
+    for (line_idx, line) in text.lines().enumerate() {
+        // Skip the header line
+        if line_idx == 0 {
+            continue;
+        }
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let parts: Vec<&str> = line.splitn(4, char::is_whitespace)
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        if parts.len() < 3 {
+            continue;
+        }
+
+        let tid: u64 = match parts[0].parse() {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let cpu: f32 = parts[1].parse().unwrap_or(0.0);
+        let stat = parts[2].to_string();
+        let name = parts.get(3).map(|s| s.trim().to_string()).unwrap_or_default();
+
+        // Normalise the stat field to a human-readable state
+        let state = if stat.starts_with('R') {
+            "running".to_string()
+        } else if stat.starts_with('S') || stat.starts_with('I') {
+            "sleeping".to_string()
+        } else if stat.starts_with('Z') {
+            "zombie".to_string()
+        } else if stat.starts_with('T') {
+            "stopped".to_string()
+        } else {
+            stat
+        };
+
+        threads.push(ThreadInfo { tid, cpu_percent: cpu, state, name });
+    }
+
+    threads
+}
+
 /// Process diff — what changed since the last 5-second diff window.
 #[derive(Clone, Debug, Default)]
 pub struct ProcessDiff {
@@ -169,6 +236,9 @@ pub struct SystemSnapshot {
 
     // Process diff (updated every 5 seconds)
     pub process_diff: ProcessDiff,
+
+    // Thread list for the currently expanded PID (empty if none)
+    pub threads: Vec<ThreadInfo>,
 }
 
 // ---------------------------------------------------------------------------
@@ -218,6 +288,11 @@ pub struct SystemMonitor {
 
     // Listening ports cache (pid -> sorted port list)
     cached_listening_ports: HashMap<u32, Vec<u16>>,
+
+    // Thread cache for the expanded process
+    pub cached_threads: Vec<ThreadInfo>,
+    pub cached_threads_pid: Option<u32>,
+    last_thread_refresh: Instant,
 }
 
 impl SystemMonitor {
@@ -270,12 +345,25 @@ impl SystemMonitor {
             last_diff_time: old_time,
             cached_process_diff: ProcessDiff::default(),
             cached_listening_ports: HashMap::new(),
+            cached_threads: Vec::new(),
+            cached_threads_pid: None,
+            last_thread_refresh: old_time,
         }
     }
 
     /// Refresh and return a snapshot. Only actually refreshes sysinfo if at least
     /// `min_interval` has passed since the last refresh.
+    /// If `expanded_pid` is provided, thread info for that PID is refreshed when
+    /// necessary (pid changed or 2 seconds elapsed) and included in the snapshot.
     pub fn snapshot(&mut self, min_interval: std::time::Duration) -> SystemSnapshot {
+        self.snapshot_with_threads(min_interval, None)
+    }
+
+    pub fn snapshot_with_threads(
+        &mut self,
+        min_interval: std::time::Duration,
+        expanded_pid: Option<u32>,
+    ) -> SystemSnapshot {
         let now = Instant::now();
         let should_refresh = self.last_refresh.elapsed() >= min_interval;
 
@@ -529,6 +617,30 @@ impl SystemMonitor {
             self.cached_cpu_split.unwrap_or((0.0, 0.0, 0.0));
         let (throttled, cpu_freq_current, cpu_freq_max) = self.cached_throttle;
 
+        // Refresh thread cache when the expanded PID changes or every 2 seconds
+        let needs_thread_refresh = match (expanded_pid, self.cached_threads_pid) {
+            (None, _) => false,
+            (Some(new_pid), Some(old_pid)) if new_pid == old_pid => {
+                self.last_thread_refresh.elapsed() >= std::time::Duration::from_secs(2)
+            }
+            (Some(_), _) => true,
+        };
+
+        if expanded_pid.is_none() {
+            // Nothing expanded — clear the cache
+            if self.cached_threads_pid.is_some() {
+                self.cached_threads.clear();
+                self.cached_threads_pid = None;
+            }
+        } else if needs_thread_refresh {
+            let pid = expanded_pid.unwrap();
+            self.cached_threads = get_threads_for_pid(pid);
+            self.cached_threads_pid = Some(pid);
+            self.last_thread_refresh = Instant::now();
+        }
+
+        let threads = self.cached_threads.clone();
+
         SystemSnapshot {
             cpu_usage_per_core,
             cpu_usage_total,
@@ -561,6 +673,7 @@ impl SystemMonitor {
             net_apps: self.cached_net_apps.clone(),
             processes,
             process_diff: self.cached_process_diff.clone(),
+            threads,
         }
     }
 

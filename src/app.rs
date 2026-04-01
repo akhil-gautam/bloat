@@ -62,6 +62,8 @@ pub struct SystemTabState {
     pub show_diff: bool,
     pub tree_mode: bool,
     pub group_mode: GroupMode,
+    /// PID currently expanded to show its threads. None means no expansion.
+    pub expanded_pid: Option<u32>,
 }
 
 impl SystemTabState {
@@ -76,6 +78,7 @@ impl SystemTabState {
             show_diff: false,
             tree_mode: false,
             group_mode: GroupMode::None,
+            expanded_pid: None,
         }
     }
 }
@@ -782,8 +785,67 @@ impl App {
                     self.system_tab.confirm_kill = true;
                 }
             }
+            // Expand / collapse thread view for the selected process
+            // Disabled in grouped mode (no individual PIDs to expand)
+            KeyCode::Enter | KeyCode::Char('e')
+                if self.system_tab.group_mode == GroupMode::None =>
+            {
+                let selected_pid = self.selected_pid();
+                self.system_tab.expanded_pid = match (selected_pid, self.system_tab.expanded_pid) {
+                    (Some(pid), Some(prev)) if pid == prev => None, // collapse
+                    (Some(pid), _) => Some(pid),                    // expand
+                    (None, _) => None,
+                };
+            }
             _ => {}
         }
+    }
+
+    /// Return the PID of the currently selected process (flat or tree mode).
+    fn selected_pid(&self) -> Option<u32> {
+        let snap = self.sys_snapshot.as_ref()?;
+        if self.system_tab.group_mode != GroupMode::None {
+            return None;
+        }
+        let matcher = fuzzy_matcher::skim::SkimMatcherV2::default();
+        let mut filtered: Vec<_> = snap
+            .processes
+            .iter()
+            .filter(|p| {
+                self.system_tab.filter.is_empty()
+                    || matcher.fuzzy_match(&p.name, &self.system_tab.filter).is_some()
+            })
+            .collect();
+        // Re-apply the same sort as the UI
+        filtered.sort_by(|a, b| {
+            use fuzzy_matcher::FuzzyMatcher;
+            if !self.system_tab.filter.is_empty() {
+                let sa = matcher.fuzzy_match(&a.name, &self.system_tab.filter).unwrap_or(0);
+                let sb = matcher.fuzzy_match(&b.name, &self.system_tab.filter).unwrap_or(0);
+                if sa != sb {
+                    return sb.cmp(&sa);
+                }
+            }
+            match self.system_tab.sort_by {
+                ProcessSort::Cpu => {
+                    if self.system_tab.sort_ascending {
+                        a.cpu_percent.partial_cmp(&b.cpu_percent).unwrap_or(std::cmp::Ordering::Equal)
+                    } else {
+                        b.cpu_percent.partial_cmp(&a.cpu_percent).unwrap_or(std::cmp::Ordering::Equal)
+                    }
+                }
+                ProcessSort::Mem => {
+                    if self.system_tab.sort_ascending { a.mem_bytes.cmp(&b.mem_bytes) } else { b.mem_bytes.cmp(&a.mem_bytes) }
+                }
+                ProcessSort::Pid => {
+                    if self.system_tab.sort_ascending { a.pid.cmp(&b.pid) } else { b.pid.cmp(&a.pid) }
+                }
+                ProcessSort::Name => {
+                    if self.system_tab.sort_ascending { a.name.cmp(&b.name) } else { b.name.cmp(&a.name) }
+                }
+            }
+        });
+        filtered.get(self.system_tab.selected_process).map(|p| p.pid)
     }
 
     fn filtered_process_count(&self) -> usize {
@@ -948,7 +1010,11 @@ pub fn run(mut terminal: DefaultTerminal, mut app: App) -> std::io::Result<()> {
 
         // Refresh system stats (always, so alert engine keeps running)
         {
-            let snap = app.sys_monitor.snapshot(std::time::Duration::from_secs(1));
+            let expanded_pid = app.system_tab.expanded_pid;
+            let snap = app.sys_monitor.snapshot_with_threads(
+                std::time::Duration::from_secs(1),
+                expanded_pid,
+            );
             app.alert_engine.update(snap.cpu_usage_total, snap.mem_used, snap.mem_total);
             app.sys_snapshot = Some(snap);
         }
