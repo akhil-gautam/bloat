@@ -68,6 +68,25 @@ pub struct DiskMount {
     pub fs_type: String,
 }
 
+/// Docker container information.
+#[derive(Clone, Debug)]
+pub struct ContainerInfo {
+    pub id: String,
+    pub name: String,
+    pub image: String,
+    pub status: String,
+    pub ports: Vec<String>,
+    pub cpu_percent: Option<f64>,
+    pub mem_usage: Option<String>,
+}
+
+/// Current Kubernetes context/namespace.
+#[derive(Clone, Debug, Default)]
+pub struct KubeContext {
+    pub context: String,
+    pub namespace: String,
+}
+
 /// GPU information from ioreg.
 #[derive(Clone, Debug)]
 pub struct GpuInfo {
@@ -248,6 +267,10 @@ pub struct SystemSnapshot {
 
     // Thread list for the currently expanded PID (empty if none)
     pub threads: Vec<ThreadInfo>,
+
+    // Containers
+    pub containers: Vec<ContainerInfo>,
+    pub kube_context: Option<KubeContext>,
 }
 
 impl SystemSnapshot {
@@ -324,6 +347,8 @@ impl SystemSnapshot {
             processes,
             process_diff: ProcessDiff::default(),
             threads: Vec::new(),
+            containers: Vec::new(),
+            kube_context: None,
         }
     }
 }
@@ -376,6 +401,10 @@ pub struct SystemMonitor {
     pub cached_threads: Vec<ThreadInfo>,
     pub cached_threads_pid: Option<u32>,
     last_thread_refresh: Instant,
+
+    // Container / Kubernetes cache
+    cached_containers: Vec<ContainerInfo>,
+    cached_kube_context: Option<KubeContext>,
 }
 
 impl SystemMonitor {
@@ -429,6 +458,8 @@ impl SystemMonitor {
             cached_threads: Vec::new(),
             cached_threads_pid: None,
             last_thread_refresh: old_time,
+            cached_containers: Vec::new(),
+            cached_kube_context: None,
         }
     }
 
@@ -471,6 +502,8 @@ impl SystemMonitor {
             self.cached_cpu_split = parse_cpu_split();
             self.cached_throttle = detect_throttle();
             self.cached_disk_latency = parse_disk_latency();
+            self.cached_containers = parse_containers();
+            self.cached_kube_context = parse_kube_context();
             self.last_slow_refresh = Instant::now();
         }
 
@@ -747,6 +780,8 @@ impl SystemMonitor {
             processes,
             process_diff: self.cached_process_diff.clone(),
             threads,
+            containers: self.cached_containers.clone(),
+            kube_context: self.cached_kube_context.clone(),
         }
     }
 
@@ -1452,6 +1487,126 @@ fn parse_cpu_split() -> Option<(f32, f32, f32)> {
         }
     }
     None
+}
+
+// ---------------------------------------------------------------------------
+// Docker container discovery
+// ---------------------------------------------------------------------------
+
+/// Collect running Docker containers.  Returns an empty Vec if Docker is not
+/// installed or the socket is not reachable — never panics.
+fn parse_containers() -> Vec<ContainerInfo> {
+    // Quick check: is the Docker socket present?
+    if !std::path::Path::new("/var/run/docker.sock").exists() {
+        return Vec::new();
+    }
+
+    // Step 1: list containers
+    let ps_output = match std::process::Command::new("docker")
+        .args(["ps", "--format", "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"])
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return Vec::new(),
+    };
+
+    let ps_text = String::from_utf8_lossy(&ps_output.stdout);
+    let mut containers: Vec<ContainerInfo> = Vec::new();
+
+    for line in ps_text.lines() {
+        let parts: Vec<&str> = line.splitn(5, '\t').collect();
+        if parts.len() < 4 {
+            continue;
+        }
+        let ports: Vec<String> = if parts.len() >= 5 && !parts[4].is_empty() {
+            parts[4]
+                .split(", ")
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        containers.push(ContainerInfo {
+            id: parts[0].to_string(),
+            name: parts[1].to_string(),
+            image: parts[2].to_string(),
+            status: parts[3].to_string(),
+            ports,
+            cpu_percent: None,
+            mem_usage: None,
+        });
+    }
+
+    if containers.is_empty() {
+        return containers;
+    }
+
+    // Step 2: fetch stats (CPU + memory) — one shot, no-stream
+    if let Ok(stats_output) = std::process::Command::new("docker")
+        .args(["stats", "--no-stream", "--format", "{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}"])
+        .output()
+    {
+        let stats_text = String::from_utf8_lossy(&stats_output.stdout);
+        for line in stats_text.lines() {
+            let parts: Vec<&str> = line.splitn(3, '\t').collect();
+            if parts.len() < 3 {
+                continue;
+            }
+            let name = parts[0].trim();
+            let cpu_str = parts[1].trim().trim_end_matches('%');
+            let mem_str = parts[2].trim();
+
+            if let Some(c) = containers.iter_mut().find(|c| c.name == name) {
+                c.cpu_percent = cpu_str.parse::<f64>().ok();
+                c.mem_usage = Some(mem_str.to_string());
+            }
+        }
+    }
+
+    containers
+}
+
+// ---------------------------------------------------------------------------
+// Kubernetes context discovery
+// ---------------------------------------------------------------------------
+
+/// Return the current kubectl context + namespace, or None if kubectl/config
+/// is unavailable.
+fn parse_kube_context() -> Option<KubeContext> {
+    // Fast-path: skip if no kubeconfig
+    let home = std::env::var("HOME").ok()?;
+    if !std::path::Path::new(&format!("{}/.kube/config", home)).exists() {
+        return None;
+    }
+
+    let ctx_output = std::process::Command::new("kubectl")
+        .args(["config", "current-context"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+
+    if !ctx_output.status.success() {
+        return None;
+    }
+
+    let context = String::from_utf8_lossy(&ctx_output.stdout).trim().to_string();
+    if context.is_empty() {
+        return None;
+    }
+
+    let namespace = std::process::Command::new("kubectl")
+        .args(["config", "view", "--minify", "-o",
+               "jsonpath={.contexts[0].context.namespace}"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    let namespace = if namespace.is_empty() { "default".to_string() } else { namespace };
+
+    Some(KubeContext { context, namespace })
 }
 
 /// Find a percentage number immediately before `suffix` in `s`.

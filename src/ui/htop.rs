@@ -5,7 +5,7 @@ use ratatui::widgets::*;
 
 use crate::alerts::{Alert, AlertLevel};
 use crate::app::{GroupMode, ProcessSort, SystemTabState};
-use crate::system_monitor::{DiskLatency, ProcessInfo, SystemSnapshot, ThreadInfo};
+use crate::system_monitor::{ContainerInfo, DiskLatency, ProcessInfo, SystemSnapshot, ThreadInfo};
 use crate::ui::format_size;
 
 // ---------------------------------------------------------------------------
@@ -293,19 +293,39 @@ fn draw_left_column(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
 }
 
 fn draw_right_column(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
-    // Sub-rows: Memory, Battery, Volumes
-    let sub = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(5),   // Memory
-            Constraint::Length(3), // Battery
-            Constraint::Min(3),   // Volumes
-        ])
-        .split(area);
+    let has_containers = !snap.containers.is_empty();
 
-    draw_memory_section(frame, snap, sub[0]);
-    draw_battery_section(frame, snap, sub[1]);
-    draw_volumes_section(frame, snap, sub[2]);
+    if has_containers {
+        // Sub-rows: Memory, Battery, Volumes (shrunk), Containers
+        let sub = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(5),    // Memory
+                Constraint::Length(3), // Battery
+                Constraint::Length(3), // Volumes (shrunk to make room)
+                Constraint::Min(4),    // Containers
+            ])
+            .split(area);
+
+        draw_memory_section(frame, snap, sub[0]);
+        draw_battery_section(frame, snap, sub[1]);
+        draw_volumes_section(frame, snap, sub[2]);
+        draw_containers_section(frame, snap, sub[3]);
+    } else {
+        // Original layout: Memory, Battery, Volumes
+        let sub = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(5),   // Memory
+                Constraint::Length(3), // Battery
+                Constraint::Min(3),   // Volumes
+            ])
+            .split(area);
+
+        draw_memory_section(frame, snap, sub[0]);
+        draw_battery_section(frame, snap, sub[1]);
+        draw_volumes_section(frame, snap, sub[2]);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1207,6 +1227,120 @@ fn draw_volumes_section(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
         .collect();
 
     frame.render_widget(List::new(items), inner);
+}
+
+// ---------------------------------------------------------------------------
+// Containers section
+// ---------------------------------------------------------------------------
+
+fn draw_containers_section(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Containers ")
+        .title_style(Style::default().fg(Color::LightCyan).add_modifier(Modifier::BOLD));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height == 0 || snap.containers.is_empty() {
+        return;
+    }
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Optional Kubernetes context line
+    if let Some(ref kube) = snap.kube_context {
+        lines.push(Line::from(vec![
+            Span::styled("K8s: ", Style::default().fg(Color::Cyan)),
+            Span::styled(
+                format!("{}/{}", kube.context, kube.namespace),
+                Style::default().fg(Color::LightCyan),
+            ),
+        ]));
+    }
+
+    // Render up to 6 containers
+    let max_containers = 6usize;
+    for container in snap.containers.iter().take(max_containers) {
+        if lines.len() >= inner.height as usize {
+            break;
+        }
+        lines.push(format_container_line(container, inner.width));
+    }
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Format one container as a single `Line`.
+fn format_container_line(c: &ContainerInfo, width: u16) -> Line<'static> {
+    // Determine status colour
+    let status_lower = c.status.to_lowercase();
+    let status_color = if status_lower.starts_with("up") || status_lower == "running" {
+        Color::Green
+    } else if status_lower.starts_with("exit") {
+        Color::Red
+    } else {
+        Color::Yellow
+    };
+
+    // Short status tag: "running" or "exited" (first word)
+    let status_tag = c.status.split_whitespace().next().unwrap_or("?").to_string();
+
+    // First mapped port (e.g. "0.0.0.0:3000->3000/tcp" → ":3000")
+    let port_hint: String = c.ports.first()
+        .and_then(|p| {
+            // Extract the host port from "0.0.0.0:HPORT->CPORT/proto"
+            if let Some(arrow) = p.find("->") {
+                let host_part = &p[..arrow];
+                host_part.rfind(':').map(|i| format!(":{}", &host_part[i + 1..]))
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default();
+
+    // CPU and memory strings
+    let cpu_str = c.cpu_percent
+        .map(|v| format!("{:.0}%", v))
+        .unwrap_or_else(|| "--".to_string());
+
+    let mem_str = c.mem_usage.clone().unwrap_or_else(|| "--".to_string());
+    // Trim mem to the "used" portion before the '/' for compactness
+    let mem_display = mem_str.split('/').next().unwrap_or(&mem_str).trim().to_string();
+
+    // Truncate image name to fit
+    let max_image = (width as usize).saturating_sub(30).max(8);
+    let image = truncate_str(&c.image, max_image);
+
+    let mut spans = vec![
+        Span::styled(
+            format!("{:<width$} ", image, width = max_image),
+            Style::default().fg(Color::White),
+        ),
+        Span::styled(
+            format!("{:<8}", status_tag),
+            Style::default().fg(status_color),
+        ),
+    ];
+
+    if !port_hint.is_empty() {
+        spans.push(Span::styled(
+            format!("{:<8}", port_hint),
+            Style::default().fg(Color::DarkGray),
+        ));
+    } else {
+        spans.push(Span::raw("        "));
+    }
+
+    spans.push(Span::styled(
+        format!("{:>4} ", cpu_str),
+        Style::default().fg(Color::Yellow),
+    ));
+    spans.push(Span::styled(
+        mem_display,
+        Style::default().fg(Color::Magenta),
+    ));
+
+    Line::from(spans)
 }
 
 // ---------------------------------------------------------------------------
