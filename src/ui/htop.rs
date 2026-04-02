@@ -1602,15 +1602,26 @@ fn draw_flat_processes(
         (list_area.width as usize).saturating_sub(35)
     };
 
+    // Compute scroll offset to keep selection visible
+    let scroll_offset = if state.selected_process >= max_rows {
+        state.selected_process - max_rows + 1
+    } else {
+        0
+    };
+
     let mut items: Vec<ListItem> = Vec::new();
-    let mut visual_idx = 0usize;  // index into the visible rows (including thread rows)
+    let mut visual_idx = 0usize;
 
     for p in filtered.iter() {
         if items.len() >= max_rows {
             break;
         }
-        // Process row — visual_idx tracks selection
-        items.push(build_process_list_item(p, "", visual_idx, state.selected_process, wide, cmd_max));
+
+        let is_in_viewport = visual_idx >= scroll_offset;
+
+        if is_in_viewport {
+            items.push(build_process_list_item(p, "", visual_idx, state.selected_process, wide, cmd_max));
+        }
         visual_idx += 1;
 
         // Inject thread rows when this process is expanded
@@ -1619,7 +1630,9 @@ fn draw_flat_processes(
             let thread_items = build_thread_items(&snap.threads, wide, bg);
             let remaining = max_rows.saturating_sub(items.len());
             for t in thread_items.into_iter().take(remaining) {
-                items.push(t);
+                if visual_idx >= scroll_offset {
+                    items.push(t);
+                }
                 // Thread rows are not selectable, so we don't advance visual_idx
             }
         }
@@ -1673,6 +1686,13 @@ fn draw_tree_processes(
         (list_area.width as usize).saturating_sub(35)
     };
 
+    // Compute scroll offset to keep selection visible
+    let scroll_offset = if state.selected_process >= max_rows {
+        state.selected_process - max_rows + 1
+    } else {
+        0
+    };
+
     let mut items: Vec<ListItem> = Vec::new();
     let mut visual_idx = 0usize;
 
@@ -1680,7 +1700,11 @@ fn draw_tree_processes(
         if items.len() >= max_rows {
             break;
         }
-        items.push(build_process_list_item(p, prefix, visual_idx, state.selected_process, wide, cmd_max));
+
+        let is_in_viewport = visual_idx >= scroll_offset;
+        if is_in_viewport {
+            items.push(build_process_list_item(p, prefix, visual_idx, state.selected_process, wide, cmd_max));
+        }
         visual_idx += 1;
 
         // Inject thread rows when this process is expanded
@@ -1689,7 +1713,9 @@ fn draw_tree_processes(
             let thread_items = build_thread_items(&snap.threads, wide, bg);
             let remaining = max_rows.saturating_sub(items.len());
             for t in thread_items.into_iter().take(remaining) {
-                items.push(t);
+                if visual_idx >= scroll_offset {
+                    items.push(t);
+                }
             }
         }
     }
