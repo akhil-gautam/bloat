@@ -389,7 +389,7 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect) {
         Line::from(vec![key("g"),          desc("Cycle grouping (None → App → User)")]),
         Line::from(vec![key("e / Enter"),  desc("Expand process threads")]),
         Line::from(vec![key("d"),          desc("Toggle process diff (changes in 5s)")]),
-        Line::from(vec![key("k"),          desc("Kill selected process")]),
+        Line::from(vec![key("K (shift+k)"), desc("Kill selected process")]),
         Line::from(vec![key("Space"),      desc("Pause / resume (enter playback)")]),
         Line::from(vec![key("← / →"),      desc("Scrub history (when paused)")]),
         Line::from(vec![key("Esc"),        desc("Exit filter / cancel / unpause")]),

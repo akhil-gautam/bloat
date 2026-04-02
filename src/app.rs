@@ -835,16 +835,14 @@ impl App {
                 }
             }
             // Expand / collapse thread view for the selected process
-            // Disabled in grouped mode (no individual PIDs to expand)
-            KeyCode::Enter | KeyCode::Char('e')
-                if self.system_tab.group_mode == GroupMode::None =>
-            {
-                let selected_pid = self.selected_pid();
-                self.system_tab.expanded_pid = match (selected_pid, self.system_tab.expanded_pid) {
-                    (Some(pid), Some(prev)) if pid == prev => None, // collapse
-                    (Some(pid), _) => Some(pid),                    // expand
-                    (None, _) => None,
-                };
+            KeyCode::Char('e') if self.system_tab.group_mode == GroupMode::None => {
+                if let Some(pid) = self.selected_pid() {
+                    if self.system_tab.expanded_pid == Some(pid) {
+                        self.system_tab.expanded_pid = None;
+                    } else {
+                        self.system_tab.expanded_pid = Some(pid);
+                    }
+                }
             }
             _ => {}
         }

@@ -54,8 +54,27 @@ impl History {
         &self.points
     }
 
+    /// Return anomalies from the last 10 seconds (not just the latest point).
     pub fn latest_anomalies(&self) -> Vec<&AnomalyEvent> {
-        self.points.back().map_or(Vec::new(), |p| p.anomalies.iter().collect())
+        let cutoff = std::time::SystemTime::now()
+            - std::time::Duration::from_secs(10);
+        let mut result = Vec::new();
+        // Walk backwards through recent points
+        for point in self.points.iter().rev().take(15) {
+            if point.timestamp < cutoff {
+                break;
+            }
+            for anomaly in &point.anomalies {
+                // Avoid duplicates — only add if we don't already have this type
+                let dominated = result.iter().any(|existing: &&AnomalyEvent| {
+                    std::mem::discriminant(*existing) == std::mem::discriminant(anomaly)
+                });
+                if !dominated {
+                    result.push(anomaly);
+                }
+            }
+        }
+        result
     }
 
     pub fn get_point(&self, index: usize) -> Option<&HistoryPoint> {
