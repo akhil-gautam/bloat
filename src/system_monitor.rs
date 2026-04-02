@@ -1437,24 +1437,27 @@ fn parse_listening_ports() -> HashMap<u32, Vec<u16>> {
 // ---------------------------------------------------------------------------
 
 fn parse_iostat() -> Option<DiskIoStats> {
-    // `iostat -d -c 1` gives one snapshot with MB/s for each disk
-    // Format:
-    //               disk0
-    //     KB/t  tps  MB/s
-    //    22.65  187  4.13
+    // `iostat -d -c 2 -w 1` gives two samples: first is average since boot
+    // (useless), second is the 1-second live measurement. We want the second.
+    // This blocks for 1 second — only called from the background thread.
     let output = std::process::Command::new("iostat")
-        .args(["-d", "-c", "1"])
+        .args(["-d", "-c", "2", "-w", "1"])
         .output()
         .ok()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    // Sum MB/s across all disks (every 3rd column in the data row)
+    // Format:
+    //               disk0               disk4
+    //     KB/t  tps  MB/s     KB/t  tps  MB/s
+    //    22.65  187  4.13     4.92    0  0.00     <- boot average (skip)
+    //     8.00   12  0.09     0.00    0  0.00     <- live 1-second sample (use this)
     let lines: Vec<&str> = stdout.lines().collect();
-    if lines.len() < 3 {
+    // We need at least 4 lines: header1, header2, sample1, sample2
+    if lines.len() < 4 {
         return None;
     }
 
-    // The header line tells us column positions, data is the last line
+    // Take the LAST line (second sample = live data)
     let data_line = lines.last()?;
     let values: Vec<f64> = data_line
         .split_whitespace()
@@ -1470,13 +1473,11 @@ fn parse_iostat() -> Option<DiskIoStats> {
         }
     }
 
-    // iostat only gives total throughput, not split read/write in this mode
-    // Use it as read estimate; for write we need a different approach
     let bytes_per_sec = (total_mb_s * 1024.0 * 1024.0) as u64;
 
     Some(DiskIoStats {
         read_per_sec: bytes_per_sec,
-        write_per_sec: 0, // iostat basic mode doesn't split r/w
+        write_per_sec: 0,
     })
 }
 
