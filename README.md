@@ -298,6 +298,171 @@ Space          Pause / resume (enter playback)
 Esc            Exit filter / cancel / unpause
 ```
 
+## Plugins
+
+bloat has a three-layer plugin system — from zero-code config to full Lua scripting. Plugins add custom panels to the System Monitor tab.
+
+### Layer 1: TOML Config (zero code)
+
+Create `~/.config/bloat/plugins.toml`:
+
+```toml
+[[panel]]
+name = "Redis"
+command = "redis-cli info memory | grep used_memory_human"
+interval = 5
+position = "right"
+color = "red"
+
+[[panel]]
+name = "Postgres"
+command = "psql -c 'SELECT count(*) FROM pg_stat_activity;' -t 2>/dev/null || echo 'PG not running'"
+interval = 10
+position = "right"
+color = "blue"
+
+[[panel]]
+name = "Ollama"
+command = "curl -s localhost:11434/api/tags 2>/dev/null | python3 -c 'import sys,json; [print(m[\"name\"]) for m in json.load(sys.stdin).get(\"models\",[])]' || echo 'Ollama not running'"
+interval = 30
+position = "right"
+color = "magenta"
+
+[[panel]]
+name = "Docker"
+command = "docker ps --format '{{.Names}}\\t{{.Status}}' 2>/dev/null | head -5 || echo 'Docker not running'"
+interval = 10
+position = "left"
+color = "cyan"
+
+[[panel]]
+name = "Git"
+command = "cd ~/projects && for d in */; do echo \"$d$(cd $d && git status --short 2>/dev/null | wc -l | tr -d ' ') changes\"; done | head -5"
+interval = 30
+position = "left"
+color = "green"
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `name` | required | Panel title |
+| `command` | required | Shell command to run |
+| `interval` | `5` | Refresh interval in seconds |
+| `position` | `"right"` | `"left"` or `"right"` column |
+| `color` | none | Border color: `red`, `green`, `blue`, `yellow`, `cyan`, `magenta` |
+
+### Layer 2: External Process Protocol (any language)
+
+Plugins are executables in `~/.config/bloat/plugins/` that communicate via JSON-lines over stdin/stdout.
+
+**Protocol:**
+```
+bloat → plugin (stdin):  {"type":"tick","cpu_total":45.2,"mem_used":12884901888,"mem_total":17179869184,"processes":[...]}
+plugin → bloat (stdout): {"type":"panel","title":"My Panel","rows":[{"text":"Line 1","color":"green"},{"text":"Line 2","bold":true}]}
+```
+
+**Example plugin** (`~/.config/bloat/plugins/redis-monitor`, make executable with `chmod +x`):
+
+```bash
+#!/bin/bash
+while IFS= read -r line; do
+    info=$(redis-cli info memory 2>/dev/null)
+    if [ $? -eq 0 ]; then
+        used=$(echo "$info" | grep "used_memory_human" | cut -d: -f2 | tr -d '\r')
+        echo "{\"type\":\"panel\",\"title\":\"Redis\",\"rows\":[{\"text\":\"Memory: $used\",\"color\":\"green\"}]}"
+    else
+        echo "{\"type\":\"panel\",\"title\":\"Redis\",\"rows\":[{\"text\":\"Not running\",\"color\":\"red\"}]}"
+    fi
+done
+```
+
+Optional `manifest.toml` in the same directory for per-plugin config:
+
+```toml
+[redis-monitor]
+interval = 5
+position = "right"
+```
+
+### Layer 3: Lua Scripts (full logic)
+
+Lua scripts in `~/.config/bloat/lua/*.lua` get system data and can do computation, filtering, and conditional logic.
+
+```lua
+-- ~/.config/bloat/lua/node_monitor.lua
+
+panel = {
+    name = "Node.js",
+    interval = 3,
+    position = "right",
+    color = "green"
+}
+
+function collect(data)
+    -- data.cpu_total, data.mem_used, data.mem_total
+    -- data.processes = [{pid, name, cpu, mem}, ...]
+    local lines = {}
+    local count = 0
+    local total_mem = 0
+
+    for _, p in ipairs(data.processes) do
+        if string.find(p.name:lower(), "node") then
+            count = count + 1
+            total_mem = total_mem + p.mem
+        end
+    end
+
+    if count > 0 then
+        table.insert(lines, {text = count .. " processes", color = "green"})
+        table.insert(lines, {text = string.format("Mem: %.0f MiB", total_mem / 1048576), color = "cyan"})
+    else
+        table.insert(lines, {text = "No Node processes", color = "gray"})
+    end
+
+    return lines
+end
+```
+
+**More examples:**
+
+```lua
+-- ~/.config/bloat/lua/heavy_hitters.lua
+panel = { name = "Heavy Hitters", interval = 2, position = "left", color = "red" }
+
+function collect(data)
+    local lines = {}
+    for _, p in ipairs(data.processes) do
+        if p.cpu > 50 then
+            table.insert(lines, {
+                text = string.format("%s (PID %d): %.1f%%", p.name, p.pid, p.cpu),
+                color = "red", bold = true
+            })
+        end
+    end
+    if #lines == 0 then
+        table.insert(lines, {text = "All quiet", color = "green"})
+    end
+    return lines
+end
+```
+
+### Plugin Ideas
+
+| Use Case | Best Layer | Example |
+|----------|-----------|---------|
+| Redis queue depth | TOML | `redis-cli llen myqueue` |
+| Postgres connections | TOML | `psql -c 'SELECT count(*) FROM pg_stat_activity' -t` |
+| Sidekiq jobs | TOML | `curl -s localhost:3000/sidekiq/stats` |
+| Ollama running models | TOML | `curl -s localhost:11434/api/tags \| jq` |
+| Docker containers | TOML | `docker ps --format ...` |
+| Node.js heap stats | External | Connect to `--inspect` debug port |
+| Puma worker utilization | External | Parse puma stats endpoint |
+| PyTorch VRAM | Lua | Filter processes, compute memory |
+| ML inference tokens/sec | External | Poll ollama API, compute delta |
+| Custom alerting | Lua | Conditional logic on system data |
+
+See `examples/` directory for ready-to-use plugin samples.
+
 ## Tech Stack
 
 - **Language:** Rust
@@ -308,6 +473,8 @@ Esc            Exit filter / cancel / unpause
 - **Fuzzy search:** [fuzzy-matcher](https://github.com/lotabout/fuzzy-matcher) (skim algorithm)
 - **Notifications:** [notify-rust](https://github.com/hoodie/notify-rust) (macOS Notification Center)
 - **Trash:** [trash](https://github.com/Byron/trash-rs) (macOS Trash integration)
+- **Lua scripting:** [mlua](https://github.com/mlua-rs/mlua) (Lua 5.4, vendored)
+- **Config:** [toml](https://github.com/toml-rs/toml) (plugin config parsing)
 
 ## Architecture
 
@@ -328,6 +495,12 @@ src/
     system.rs         System cache/log rules
     apps.rs           Application cache rules
     media.rs          Duplicate/large file rules
+  plugins/
+    mod.rs            Plugin module registry
+    config.rs         TOML config-driven panel loader
+    runner.rs         Shell command panel executor
+    protocol.rs       External process JSON-lines protocol
+    lua_engine.rs     Lua scripting engine
   ui/
     mod.rs            Main draw + header + status bar + help overlay
     overview.rs       Tab 1: disk dashboard
@@ -335,6 +508,13 @@ src/
     cleanup.rs        Tab 3: smart cleanup
     logs.rs           Tab 4: deletion history
     htop.rs           System monitor (CPU/mem/net/GPU/processes)
+
+~/.config/bloat/          User config directory
+  plugins.toml            TOML panel definitions
+  plugins/                External process plugins (executables)
+    manifest.toml         Optional per-plugin config
+  lua/                    Lua script plugins
+    *.lua                 One file per panel
 ```
 
 ## License
