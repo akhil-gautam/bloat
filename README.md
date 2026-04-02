@@ -4,6 +4,8 @@
 
 An htop-style terminal UI for macOS that combines **disk storage analysis**, **smart cleanup**, and **real-time system monitoring** in one tool. Scan folders to find what's eating your disk, clean up caches/build artifacts/duplicates with tiered safety, and monitor CPU, memory, network, GPU, and processes — all without leaving the terminal.
 
+![bloat system monitor](assets/screenshot.png)
+
 Built in Rust with [ratatui](https://github.com/ratatui/ratatui).
 
 ## Install
