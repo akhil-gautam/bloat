@@ -3,6 +3,7 @@ use sysinfo::{
     Users,
 };
 use std::collections::{HashMap, VecDeque};
+use std::sync::{mpsc, Mutex};
 use std::time::Instant;
 
 // ---------------------------------------------------------------------------
@@ -412,6 +413,25 @@ pub struct SystemMonitor {
     // Container / Kubernetes cache
     cached_containers: Vec<ContainerInfo>,
     cached_kube_context: Option<KubeContext>,
+
+    // Background slow-refresh
+    slow_rx: Option<mpsc::Receiver<SlowRefreshData>>,
+    slow_running: bool,
+}
+
+/// Data collected by the background slow-refresh thread.
+struct SlowRefreshData {
+    battery: Option<BatteryInfo>,
+    mem_breakdown: Option<MemoryBreakdown>,
+    mem_pressure_level: u8,
+    gpu: Option<GpuInfo>,
+    net_apps: Vec<NetAppInfo>,
+    listening_ports: HashMap<u32, Vec<u16>>,
+    cpu_split: Option<(f32, f32, f32)>,
+    throttle: (bool, Option<u64>, Option<u64>),
+    disk_latency: Option<DiskLatency>,
+    containers: Vec<ContainerInfo>,
+    kube_context: Option<KubeContext>,
 }
 
 impl SystemMonitor {
@@ -467,6 +487,8 @@ impl SystemMonitor {
             last_thread_refresh: old_time,
             cached_containers: Vec::new(),
             cached_kube_context: None,
+            slow_rx: None,
+            slow_running: false,
         }
     }
 
@@ -493,25 +515,60 @@ impl SystemMonitor {
             self.last_refresh = Instant::now();
         }
 
-        // Refresh slow data every 5 seconds
-        if self.last_slow_refresh.elapsed() >= std::time::Duration::from_secs(5) {
-            self.cached_battery = parse_battery();
-            self.cached_mem_breakdown = parse_vm_stat();
-            self.cached_mem_pressure_level = std::process::Command::new("sysctl")
-                .args(["-n", "kern.memorystatus_level"])
-                .output()
-                .ok()
-                .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u8>().ok())
-                .unwrap_or(100); // 100 = no pressure
-            self.cached_gpu = parse_gpu_info();
-            self.cached_net_apps = parse_net_apps();
-            self.cached_listening_ports = parse_listening_ports();
-            self.cached_cpu_split = parse_cpu_split();
-            self.cached_throttle = detect_throttle();
-            self.cached_disk_latency = parse_disk_latency();
-            self.cached_containers = parse_containers();
-            self.cached_kube_context = parse_kube_context();
-            self.last_slow_refresh = Instant::now();
+        // Check if background slow-refresh completed
+        if let Some(ref rx) = self.slow_rx {
+            if let Ok(data) = rx.try_recv() {
+                self.cached_battery = data.battery;
+                self.cached_mem_breakdown = data.mem_breakdown;
+                self.cached_mem_pressure_level = data.mem_pressure_level;
+                self.cached_gpu = data.gpu;
+                self.cached_net_apps = data.net_apps;
+                self.cached_listening_ports = data.listening_ports;
+                self.cached_cpu_split = data.cpu_split;
+                self.cached_throttle = data.throttle;
+                self.cached_disk_latency = data.disk_latency;
+                self.cached_containers = data.containers;
+                self.cached_kube_context = data.kube_context;
+                self.slow_running = false;
+                self.slow_rx = None;
+                self.last_slow_refresh = Instant::now();
+            }
+        }
+
+        // Launch background slow-refresh every 5 seconds (non-blocking)
+        if !self.slow_running
+            && self.last_slow_refresh.elapsed() >= std::time::Duration::from_secs(5)
+        {
+            self.slow_running = true;
+            let (tx, rx) = mpsc::channel();
+            self.slow_rx = Some(rx);
+            std::thread::spawn(move || {
+                let mem_pressure_level = std::process::Command::new("sysctl")
+                    .args(["-n", "kern.memorystatus_level"])
+                    .output()
+                    .ok()
+                    .and_then(|o| {
+                        String::from_utf8_lossy(&o.stdout)
+                            .trim()
+                            .parse::<u8>()
+                            .ok()
+                    })
+                    .unwrap_or(100);
+
+                let _ = tx.send(SlowRefreshData {
+                    battery: parse_battery(),
+                    mem_breakdown: parse_vm_stat(),
+                    mem_pressure_level,
+                    gpu: parse_gpu_info(),
+                    net_apps: parse_net_apps(),
+                    listening_ports: parse_listening_ports(),
+                    cpu_split: parse_cpu_split(),
+                    throttle: detect_throttle(),
+                    disk_latency: parse_disk_latency(),
+                    containers: parse_containers(),
+                    kube_context: parse_kube_context(),
+                });
+            });
         }
 
         // CPU
