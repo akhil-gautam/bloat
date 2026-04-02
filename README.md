@@ -8,13 +8,36 @@ Built in Rust with [ratatui](https://github.com/ratatui/ratatui).
 
 ## Install
 
+### One-line install (recommended)
+
 ```bash
-# Clone and build
-git clone git@github.com:akhil-gautam/bloat.git
+curl -fsSL https://raw.githubusercontent.com/akhil-gautam/bloat/main/install.sh | bash
+```
+
+Downloads the latest release binary for your Mac (Apple Silicon or Intel) and installs to `/usr/local/bin/`.
+
+### From GitHub Releases
+
+Download the latest binary from [Releases](https://github.com/akhil-gautam/bloat/releases):
+
+| Platform | Download |
+|----------|----------|
+| macOS Universal (ARM64 + Intel) | `bloat-vX.Y.Z-macos-universal.tar.gz` |
+| macOS Apple Silicon | `bloat-vX.Y.Z-macos-arm64.tar.gz` |
+| macOS Intel | `bloat-vX.Y.Z-macos-x86_64.tar.gz` |
+
+```bash
+tar -xzf bloat-*.tar.gz
+chmod +x bloat
+sudo mv bloat /usr/local/bin/
+```
+
+### Build from source
+
+```bash
+git clone https://github.com/akhil-gautam/bloat.git
 cd bloat
 cargo build --release
-
-# Run
 ./target/release/bloat
 ```
 
