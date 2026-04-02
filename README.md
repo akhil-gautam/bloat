@@ -463,7 +463,55 @@ end
 | ML inference tokens/sec | External | Poll ollama API, compute delta |
 | Custom alerting | Lua | Conditional logic on system data |
 
-See `examples/` directory for ready-to-use plugin samples.
+### Real-World Example: Postgres Monitoring
+
+Create `~/.config/bloat/plugins.toml` to monitor your database alongside system metrics:
+
+```toml
+# Connection states (active, idle, etc.)
+[[panel]]
+name = "PG Connections"
+command = "psql -c \"SELECT state, count(*) FROM pg_stat_activity GROUP BY state ORDER BY count DESC;\" -t 2>/dev/null || echo 'PG not running'"
+interval = 5
+position = "right"
+color = "blue"
+
+# Currently running queries
+[[panel]]
+name = "PG Active Queries"
+command = "psql -c \"SELECT pid, now()-query_start as duration, left(query,50) FROM pg_stat_activity WHERE state='active' AND query NOT LIKE '%pg_stat%' ORDER BY duration DESC LIMIT 5;\" -t 2>/dev/null || echo 'None'"
+interval = 5
+position = "right"
+color = "blue"
+
+# Database sizes
+[[panel]]
+name = "PG Databases"
+command = "psql -c \"SELECT datname, pg_size_pretty(pg_database_size(datname)) as size FROM pg_database WHERE datistemplate=false ORDER BY pg_database_size(datname) DESC LIMIT 8;\" -t 2>/dev/null || echo 'PG not running'"
+interval = 30
+position = "left"
+color = "blue"
+
+# Largest tables in your app database
+[[panel]]
+name = "PG Top Tables"
+command = "psql -d myapp_development -c \"SELECT schemaname||'.'||relname, pg_size_pretty(pg_total_relation_size(relid)) FROM pg_catalog.pg_statio_user_tables ORDER BY pg_total_relation_size(relid) DESC LIMIT 5;\" -t 2>/dev/null || echo 'No tables'"
+interval = 30
+position = "left"
+color = "cyan"
+
+# Redis alongside Postgres
+[[panel]]
+name = "Redis"
+command = "redis-cli info memory 2>/dev/null | grep -E 'used_memory_human|connected_clients' || echo 'Redis not running'"
+interval = 5
+position = "right"
+color = "red"
+```
+
+Replace `myapp_development` with your database name. Add `-U username -h hostname` to `psql` if needed.
+
+See `examples/` directory for more ready-to-use plugin samples.
 
 ## Tech Stack
 
