@@ -6,6 +6,9 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{mpsc, Mutex};
 use std::time::Instant;
 
+use crate::plugins::config::PanelDef;
+use crate::plugins::runner::{run_plugins, PanelOutput};
+
 // ---------------------------------------------------------------------------
 // Public snapshot types
 // ---------------------------------------------------------------------------
@@ -278,6 +281,9 @@ pub struct SystemSnapshot {
     // Containers
     pub containers: Vec<ContainerInfo>,
     pub kube_context: Option<KubeContext>,
+
+    // Plugin panels
+    pub plugin_outputs: Vec<PanelOutput>,
 }
 
 impl SystemSnapshot {
@@ -357,6 +363,7 @@ impl SystemSnapshot {
             threads: Vec::new(),
             containers: Vec::new(),
             kube_context: None,
+            plugin_outputs: Vec::new(),
         }
     }
 }
@@ -414,6 +421,11 @@ pub struct SystemMonitor {
     cached_containers: Vec<ContainerInfo>,
     cached_kube_context: Option<KubeContext>,
 
+    // Plugin panel cache
+    panel_defs: Vec<PanelDef>,
+    cached_plugin_outputs: Vec<PanelOutput>,
+    plugin_last_run: HashMap<String, Instant>,
+
     // Background slow-refresh
     slow_rx: Option<mpsc::Receiver<SlowRefreshData>>,
     slow_running: bool,
@@ -432,6 +444,8 @@ struct SlowRefreshData {
     disk_latency: Option<DiskLatency>,
     containers: Vec<ContainerInfo>,
     kube_context: Option<KubeContext>,
+    plugin_outputs: Vec<PanelOutput>,
+    plugin_last_run: HashMap<String, Instant>,
 }
 
 impl SystemMonitor {
@@ -487,6 +501,9 @@ impl SystemMonitor {
             last_thread_refresh: old_time,
             cached_containers: Vec::new(),
             cached_kube_context: None,
+            panel_defs: crate::plugins::config::load_config().panel,
+            cached_plugin_outputs: Vec::new(),
+            plugin_last_run: HashMap::new(),
             slow_rx: None,
             slow_running: false,
         }
@@ -529,6 +546,15 @@ impl SystemMonitor {
                 self.cached_disk_latency = data.disk_latency;
                 self.cached_containers = data.containers;
                 self.cached_kube_context = data.kube_context;
+                // Merge updated plugin outputs into cache
+                for po in data.plugin_outputs {
+                    if let Some(existing) = self.cached_plugin_outputs.iter_mut().find(|o| o.name == po.name) {
+                        *existing = po;
+                    } else {
+                        self.cached_plugin_outputs.push(po);
+                    }
+                }
+                self.plugin_last_run = data.plugin_last_run;
                 self.slow_running = false;
                 self.slow_rx = None;
                 self.last_slow_refresh = Instant::now();
@@ -542,6 +568,9 @@ impl SystemMonitor {
             self.slow_running = true;
             let (tx, rx) = mpsc::channel();
             self.slow_rx = Some(rx);
+            // Clone plugin state for the background thread
+            let panel_defs_clone = self.panel_defs.clone();
+            let plugin_last_run_clone = self.plugin_last_run.clone();
             std::thread::spawn(move || {
                 let mem_pressure_level = std::process::Command::new("sysctl")
                     .args(["-n", "kern.memorystatus_level"])
@@ -555,6 +584,9 @@ impl SystemMonitor {
                     })
                     .unwrap_or(100);
 
+                let (plugin_outputs, plugin_last_run) =
+                    run_plugins(&panel_defs_clone, &plugin_last_run_clone);
+
                 let _ = tx.send(SlowRefreshData {
                     battery: parse_battery(),
                     mem_breakdown: parse_vm_stat(),
@@ -567,6 +599,8 @@ impl SystemMonitor {
                     disk_latency: parse_disk_latency(),
                     containers: parse_containers(),
                     kube_context: parse_kube_context(),
+                    plugin_outputs,
+                    plugin_last_run,
                 });
             });
         }
@@ -852,6 +886,7 @@ impl SystemMonitor {
             threads,
             containers: self.cached_containers.clone(),
             kube_context: self.cached_kube_context.clone(),
+            plugin_outputs: self.cached_plugin_outputs.clone(),
         }
     }
 

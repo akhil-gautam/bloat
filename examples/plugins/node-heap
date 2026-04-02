@@ -1,0 +1,25 @@
+#!/bin/bash
+# bloat plugin: Node.js Heap Monitor
+
+while IFS= read -r line; do
+    # Check for Node processes with inspect port
+    node_pids=$(pgrep -f "node.*--inspect" 2>/dev/null)
+    if [ -n "$node_pids" ]; then
+        # Try to get heap stats from debug port
+        heap=$(curl -s localhost:9229/json 2>/dev/null | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    print(json.dumps({'type':'panel','title':'Node.js','rows':[{'text':f'Debugger: {len(data)} sessions','color':'green'}]}))
+except:
+    print(json.dumps({'type':'panel','title':'Node.js','rows':[{'text':'Inspect port not responding','color':'yellow'}]}))
+" 2>/dev/null)
+        if [ -n "$heap" ]; then
+            echo "$heap"
+        else
+            echo "{\"type\":\"panel\",\"title\":\"Node.js\",\"rows\":[{\"text\":\"$node_pids\",\"color\":\"cyan\"}]}"
+        fi
+    else
+        echo "{\"type\":\"panel\",\"title\":\"Node.js\",\"rows\":[{\"text\":\"No --inspect processes\",\"color\":\"gray\"}]}"
+    fi
+done

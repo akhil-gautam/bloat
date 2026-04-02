@@ -3,6 +3,7 @@ mod analyzer;
 mod app;
 mod cleaner;
 mod history;
+mod plugins;
 mod rules;
 mod scanner;
 mod system_monitor;

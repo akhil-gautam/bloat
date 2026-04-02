@@ -1,0 +1,15 @@
+#!/bin/bash
+# bloat plugin: Redis Monitor
+# Reads JSON from stdin, outputs panel JSON to stdout
+
+while IFS= read -r line; do
+    # Get Redis info
+    info=$(redis-cli info memory 2>/dev/null)
+    if [ $? -eq 0 ]; then
+        used=$(echo "$info" | grep "used_memory_human" | cut -d: -f2 | tr -d '\r')
+        clients=$(redis-cli info clients 2>/dev/null | grep "connected_clients" | cut -d: -f2 | tr -d '\r')
+        echo "{\"type\":\"panel\",\"title\":\"Redis\",\"rows\":[{\"text\":\"Memory: $used\",\"color\":\"green\"},{\"text\":\"Clients: $clients\"}]}"
+    else
+        echo "{\"type\":\"panel\",\"title\":\"Redis\",\"rows\":[{\"text\":\"Not running\",\"color\":\"red\"}]}"
+    fi
+done

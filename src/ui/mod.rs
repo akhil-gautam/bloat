@@ -58,7 +58,8 @@ fn draw_main(frame: &mut Frame, app: &App) {
             let snap_to_draw = paused_snap.as_ref().or(app.sys_snapshot.as_ref());
 
             if let Some(snap) = snap_to_draw {
-                htop::draw(frame, snap, &app.system_tab, &app.alert_engine.alerts, &app.history, chunks[1]);
+                let plugin_responses = app.plugin_manager.responses();
+                htop::draw(frame, snap, &app.system_tab, &app.alert_engine.alerts, &app.history, &plugin_responses, chunks[1]);
             } else {
                 let p = Paragraph::new("Loading system stats...")
                     .alignment(Alignment::Center)

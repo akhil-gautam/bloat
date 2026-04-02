@@ -266,6 +266,7 @@ pub struct App {
     pub system_tab: SystemTabState,
     pub alert_engine: crate::alerts::AlertEngine,
     pub history: crate::history::History,
+    pub plugin_manager: crate::plugins::protocol::PluginManager,
 }
 
 impl App {
@@ -295,6 +296,11 @@ impl App {
             system_tab: SystemTabState::new(),
             alert_engine: crate::alerts::AlertEngine::new(),
             history: crate::history::History::new(300),
+            plugin_manager: {
+                let mut pm = crate::plugins::protocol::PluginManager::new();
+                pm.load_from_dir();
+                pm
+            },
         }
     }
 
@@ -1084,6 +1090,31 @@ pub fn run(mut terminal: DefaultTerminal, mut app: App) -> std::io::Result<()> {
             // Only update the displayed snapshot when not paused
             if !app.system_tab.paused {
                 app.sys_snapshot = Some(snap);
+            }
+        }
+
+        // Feed system data to external plugins when on the System tab
+        if app.tab == Tab::System {
+            if let Some(ref snap) = app.sys_snapshot {
+                use crate::plugins::protocol::{ProcessBrief, TickMessage};
+                let tick_msg = TickMessage {
+                    r#type: "tick".to_string(),
+                    cpu_total: snap.cpu_usage_total,
+                    mem_used: snap.mem_used,
+                    mem_total: snap.mem_total,
+                    processes: snap
+                        .processes
+                        .iter()
+                        .take(50)
+                        .map(|p| ProcessBrief {
+                            pid: p.pid,
+                            name: p.name.clone(),
+                            cpu: p.cpu_percent,
+                            mem: p.mem_bytes,
+                        })
+                        .collect(),
+                };
+                app.plugin_manager.tick(&tick_msg);
             }
         }
 

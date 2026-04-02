@@ -5,6 +5,7 @@ use ratatui::widgets::*;
 
 use crate::alerts::{Alert, AlertLevel};
 use crate::app::{GroupMode, ProcessSort, SystemTabState};
+use crate::plugins::runner::PanelOutput;
 use crate::system_monitor::{ContainerInfo, DiskLatency, ProcessInfo, SystemSnapshot, ThreadInfo};
 use crate::ui::format_size;
 
@@ -18,6 +19,7 @@ pub fn draw(
     state: &SystemTabState,
     alerts: &[Alert],
     history: &crate::history::History,
+    plugin_responses: &[&crate::plugins::protocol::PanelResponse],
     area: Rect,
 ) {
     // Determine whether we need a scrubber bar (1 line) when paused
@@ -35,12 +37,22 @@ pub fn draw(
     // If diff mode is active, reserve space for diff panel above process list
     let diff_height: u16 = if state.show_diff { 5 } else { 0 };
 
+    // Reserve space for external plugin panels if any are present
+    let plugin_height: u16 = if plugin_responses.is_empty() {
+        0
+    } else {
+        // Each plugin panel shows up to 4 rows + 2 for border = 6 lines
+        let max_rows = plugin_responses.iter().map(|p| p.rows.len()).max().unwrap_or(0);
+        (max_rows.min(6) as u16 + 2).max(4)
+    };
+
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(scrubber_height),  // Scrubber / PAUSED bar (0 when live)
             Constraint::Length(alert_height),     // Alert bar (0 when no alerts)
             Constraint::Min(12),                  // Top panels
+            Constraint::Length(plugin_height),    // External plugin panels (0 when none)
             Constraint::Length(anomaly_height),   // Anomaly indicator (0 when none)
             Constraint::Length(diff_height),      // Diff overlay (0 when hidden)
             Constraint::Min(8),                   // Process list
@@ -59,15 +71,20 @@ pub fn draw(
 
     draw_top_panels(frame, snap, rows[2]);
 
-    // Render anomaly indicators between top panels and process list
+    // Render external plugin panels below the top panels
+    if plugin_height > 0 {
+        draw_plugin_panels(frame, plugin_responses, rows[3]);
+    }
+
+    // Render anomaly indicators between plugin panels and process list
     if anomaly_height > 0 {
-        draw_anomaly_bar(frame, &latest_anomalies, rows[3]);
+        draw_anomaly_bar(frame, &latest_anomalies, rows[4]);
     }
 
     if state.show_diff {
-        draw_diff_panel(frame, snap, rows[4]);
+        draw_diff_panel(frame, snap, rows[5]);
     }
-    draw_process_section(frame, snap, state, rows[5]);
+    draw_process_section(frame, snap, state, rows[6]);
 }
 
 // ---------------------------------------------------------------------------
@@ -202,6 +219,91 @@ fn draw_alert_bar(frame: &mut Frame, alerts: &[Alert], is_critical: bool, area: 
 }
 
 // ---------------------------------------------------------------------------
+// External plugin panels
+// ---------------------------------------------------------------------------
+
+fn draw_plugin_panels(
+    frame: &mut Frame,
+    responses: &[&crate::plugins::protocol::PanelResponse],
+    area: Rect,
+) {
+    if responses.is_empty() {
+        return;
+    }
+
+    // Lay out panels horizontally, one per plugin
+    let n = responses.len() as u32;
+    let constraints: Vec<Constraint> = (0..n)
+        .map(|_| Constraint::Ratio(1, n))
+        .collect();
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(constraints)
+        .split(area);
+
+    for (i, response) in responses.iter().enumerate() {
+        if i >= cols.len() {
+            break;
+        }
+        draw_single_plugin_panel(frame, response, cols[i]);
+    }
+}
+
+fn draw_single_plugin_panel(
+    frame: &mut Frame,
+    response: &crate::plugins::protocol::PanelResponse,
+    area: Rect,
+) {
+    fn parse_color(s: &str) -> Color {
+        match s {
+            "red" => Color::Red,
+            "green" => Color::Green,
+            "yellow" => Color::Yellow,
+            "blue" => Color::Blue,
+            "cyan" => Color::Cyan,
+            "magenta" => Color::Magenta,
+            "gray" | "grey" => Color::Gray,
+            "white" => Color::White,
+            _ => Color::White,
+        }
+    }
+
+    let title_color = response
+        .color
+        .as_deref()
+        .map(parse_color)
+        .unwrap_or(Color::Cyan);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {} ", response.title))
+        .title_style(Style::default().fg(title_color).add_modifier(Modifier::BOLD));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
+
+    let lines: Vec<Line> = response
+        .rows
+        .iter()
+        .take(inner.height as usize)
+        .map(|row| {
+            let color = row.color.as_deref().map(parse_color).unwrap_or(Color::White);
+            let mut style = Style::default().fg(color);
+            if row.bold {
+                style = style.add_modifier(Modifier::BOLD);
+            }
+            Line::from(Span::styled(row.text.clone(), style))
+        })
+        .collect();
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+// ---------------------------------------------------------------------------
 // Anomaly indicator bar
 // ---------------------------------------------------------------------------
 
@@ -270,62 +372,160 @@ fn draw_top_panels(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
 }
 
 fn draw_left_column(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
-    // Sub-rows: CPU, Network (with per-app + sparklines), Disk I/O, GPU
-    // +2 for the sparkline row when network data is available
+    // Sub-rows: CPU, Network (with per-app + sparklines), Disk I/O, GPU, plugin panels (left)
     let sparkline_extra: u16 = if snap.network.is_some() && !snap.net_recv_history.is_empty() { 1 } else { 0 };
     let net_height = 3 + snap.net_apps.len().min(6) as u16 + sparkline_extra; // header + apps + sparkline
     // Disk I/O block: 3 lines minimum; grow to 4 when latency data is available
     let disk_height: u16 = if snap.disk_latency.is_some() { 4 } else { 3 };
+
+    let left_plugins: Vec<&PanelOutput> = snap
+        .plugin_outputs
+        .iter()
+        .filter(|p| p.position == "left")
+        .collect();
+
+    // Build constraints: fixed panels first, then one per left plugin
+    let mut constraints = vec![
+        Constraint::Min(4),                        // CPU
+        Constraint::Length(net_height.max(4)),     // Network
+        Constraint::Length(disk_height),           // Disk I/O
+        Constraint::Length(3),                     // GPU
+    ];
+    for plugin in &left_plugins {
+        let height = (plugin.lines.len().max(1) as u16 + 2).min(22); // +2 for border
+        constraints.push(Constraint::Length(height));
+    }
+
     let sub = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(4),          // CPU
-            Constraint::Length(net_height.max(4)), // Network
-            Constraint::Length(disk_height), // Disk I/O
-            Constraint::Length(3),        // GPU
-        ])
+        .constraints(constraints)
         .split(area);
 
     draw_cpu_section(frame, snap, sub[0]);
     draw_network_section(frame, snap, sub[1]);
     draw_disk_io_section(frame, snap, sub[2]);
     draw_gpu_section(frame, snap, sub[3]);
+
+    for (i, plugin) in left_plugins.iter().enumerate() {
+        if let Some(area) = sub.get(4 + i) {
+            draw_plugin_panel(frame, plugin, *area);
+        }
+    }
 }
 
 fn draw_right_column(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
     let has_containers = !snap.containers.is_empty();
 
+    let right_plugins: Vec<&PanelOutput> = snap
+        .plugin_outputs
+        .iter()
+        .filter(|p| p.position == "right")
+        .collect();
+
+    // Build plugin constraints
+    let mut plugin_constraints: Vec<Constraint> = right_plugins
+        .iter()
+        .map(|p| {
+            let height = (p.lines.len().max(1) as u16 + 2).min(22);
+            Constraint::Length(height)
+        })
+        .collect();
+
     if has_containers {
-        // Sub-rows: Memory, Battery, Volumes (shrunk), Containers
+        // Sub-rows: Memory, Battery, Volumes (shrunk), Containers, right plugins
+        let mut constraints = vec![
+            Constraint::Min(5),    // Memory
+            Constraint::Length(3), // Battery
+            Constraint::Length(3), // Volumes (shrunk to make room)
+            Constraint::Min(4),    // Containers
+        ];
+        constraints.append(&mut plugin_constraints);
+
         let sub = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(5),    // Memory
-                Constraint::Length(3), // Battery
-                Constraint::Length(3), // Volumes (shrunk to make room)
-                Constraint::Min(4),    // Containers
-            ])
+            .constraints(constraints)
             .split(area);
 
         draw_memory_section(frame, snap, sub[0]);
         draw_battery_section(frame, snap, sub[1]);
         draw_volumes_section(frame, snap, sub[2]);
         draw_containers_section(frame, snap, sub[3]);
+
+        for (i, plugin) in right_plugins.iter().enumerate() {
+            if let Some(area) = sub.get(4 + i) {
+                draw_plugin_panel(frame, plugin, *area);
+            }
+        }
     } else {
-        // Original layout: Memory, Battery, Volumes
+        // Original layout: Memory, Battery, Volumes, right plugins
+        let mut constraints = vec![
+            Constraint::Min(5),    // Memory
+            Constraint::Length(3), // Battery
+            Constraint::Min(3),    // Volumes
+        ];
+        constraints.append(&mut plugin_constraints);
+
         let sub = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(5),   // Memory
-                Constraint::Length(3), // Battery
-                Constraint::Min(3),   // Volumes
-            ])
+            .constraints(constraints)
             .split(area);
 
         draw_memory_section(frame, snap, sub[0]);
         draw_battery_section(frame, snap, sub[1]);
         draw_volumes_section(frame, snap, sub[2]);
+
+        for (i, plugin) in right_plugins.iter().enumerate() {
+            if let Some(area) = sub.get(3 + i) {
+                draw_plugin_panel(frame, plugin, *area);
+            }
+        }
     }
+}
+
+fn draw_plugin_panel(frame: &mut Frame, plugin: &PanelOutput, area: Rect) {
+    // Map color string to ratatui Color
+    let color = match plugin.color.as_deref() {
+        Some("red") => Color::Red,
+        Some("green") => Color::Green,
+        Some("yellow") => Color::Yellow,
+        Some("blue") => Color::Blue,
+        Some("magenta") => Color::Magenta,
+        Some("cyan") => Color::Cyan,
+        Some("white") => Color::White,
+        _ => Color::White,
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {} ", plugin.name))
+        .title_style(Style::default().fg(color).add_modifier(Modifier::BOLD));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
+
+    let lines: Vec<Line> = if let Some(ref err) = plugin.error {
+        vec![Line::from(Span::styled(
+            format!("Error: {}", err),
+            Style::default().fg(Color::Red),
+        ))]
+    } else if plugin.lines.is_empty() {
+        vec![Line::from(Span::styled(
+            "(no output)",
+            Style::default().fg(Color::DarkGray),
+        ))]
+    } else {
+        plugin
+            .lines
+            .iter()
+            .map(|l| Line::from(Span::styled(l.clone(), Style::default().fg(color))))
+            .collect()
+    };
+
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 // ---------------------------------------------------------------------------
