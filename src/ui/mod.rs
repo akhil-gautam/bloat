@@ -341,65 +341,58 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 // ---------------------------------------------------------------------------
 
 fn draw_help_overlay(frame: &mut Frame, area: Rect) {
-    let popup_area = centered_rect(60, 60, area);
+    let popup_area = centered_rect(70, 80, area);
+
+    fn key(k: &str) -> Span<'static> {
+        Span::styled(format!("{:<14}", k), Style::default().fg(Color::Cyan))
+    }
+    fn desc(d: &str) -> Span<'static> {
+        Span::styled(d.to_string(), Style::default().fg(Color::White))
+    }
+    fn section(s: &str) -> Line<'static> {
+        Line::from(Span::styled(
+            format!("── {} ──", s),
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ))
+    }
 
     let help_text = vec![
-        Line::from(vec![
-            Span::styled("Key Bindings", Style::default().add_modifier(Modifier::BOLD))
-        ]),
+        section("Global"),
+        Line::from(vec![key("q"),          desc("Quit")]),
+        Line::from(vec![key("?"),          desc("Toggle this help")]),
+        Line::from(vec![key("1 / 2 / 3 / 4"), desc("Switch tabs (Overview / Explorer / Cleanup / Logs)")]),
+        Line::from(vec![key("Tab"),        desc("Next tab")]),
+        Line::from(vec![key("s"),          desc("System monitor (htop)")]),
+        Line::from(vec![key("r"),          desc("Rescan filesystem")]),
+        Line::from(vec![key("Esc"),        desc("Cancel scan / back")]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("q", Style::default().fg(Color::Yellow)),
-            Span::raw("          Quit"),
-        ]),
-        Line::from(vec![
-            Span::styled("?", Style::default().fg(Color::Yellow)),
-            Span::raw("          Toggle this help"),
-        ]),
-        Line::from(vec![
-            Span::styled("1 / 2 / 3", Style::default().fg(Color::Yellow)),
-            Span::raw("  Switch tabs"),
-        ]),
-        Line::from(vec![
-            Span::styled("Tab", Style::default().fg(Color::Yellow)),
-            Span::raw("        Next tab"),
-        ]),
-        Line::from(vec![
-            Span::styled("Shift+Tab", Style::default().fg(Color::Yellow)),
-            Span::raw("  Previous tab"),
-        ]),
+        section("Overview (Tab 1)"),
+        Line::from(vec![key("j / k"),      desc("Navigate top consumers")]),
+        Line::from(vec![key("Space"),      desc("Select item for deletion")]),
+        Line::from(vec![key("d / Enter"),  desc("Delete selected (with confirmation)")]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("Explorer", Style::default().add_modifier(Modifier::BOLD))
-        ]),
-        Line::from(vec![
-            Span::styled("j / k / ↑↓", Style::default().fg(Color::Yellow)),
-            Span::raw(" Navigate"),
-        ]),
-        Line::from(vec![
-            Span::styled("l / → / Enter", Style::default().fg(Color::Yellow)),
-            Span::raw(" Expand dir"),
-        ]),
-        Line::from(vec![
-            Span::styled("h / ←", Style::default().fg(Color::Yellow)),
-            Span::raw("      Collapse dir"),
-        ]),
+        section("Explorer (Tab 2)"),
+        Line::from(vec![key("j / k / ↑↓"), desc("Navigate tree")]),
+        Line::from(vec![key("l / → / Enter"), desc("Expand directory")]),
+        Line::from(vec![key("h / ←"),      desc("Collapse directory")]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("Cleanup", Style::default().add_modifier(Modifier::BOLD))
-        ]),
-        Line::from(vec![
-            Span::styled("j / k / ↑↓", Style::default().fg(Color::Yellow)),
-            Span::raw(" Navigate"),
-        ]),
-        Line::from(vec![
-            Span::styled("Space", Style::default().fg(Color::Yellow)),
-            Span::raw("       Toggle item"),
-        ]),
-        Line::from(vec![
-            Span::styled("a", Style::default().fg(Color::Yellow)),
-            Span::raw("          Toggle all"),
-        ]),
+        section("Cleanup (Tab 3)"),
+        Line::from(vec![key("j / k"),      desc("Navigate items")]),
+        Line::from(vec![key("Space"),      desc("Toggle item checkbox")]),
+        Line::from(vec![key("a"),          desc("Select / deselect all")]),
+        Line::from(vec![key("Enter"),      desc("Clean selected items")]),
+        Line::from(""),
+        section("System Monitor (s)"),
+        Line::from(vec![key("c / m / p / n"), desc("Sort by CPU / MEM / PID / Name")]),
+        Line::from(vec![key("/"),          desc("Fuzzy search processes")]),
+        Line::from(vec![key("t"),          desc("Toggle tree view (parent→child)")]),
+        Line::from(vec![key("g"),          desc("Cycle grouping (None → App → User)")]),
+        Line::from(vec![key("e / Enter"),  desc("Expand process threads")]),
+        Line::from(vec![key("d"),          desc("Toggle process diff (changes in 5s)")]),
+        Line::from(vec![key("k"),          desc("Kill selected process")]),
+        Line::from(vec![key("Space"),      desc("Pause / resume (enter playback)")]),
+        Line::from(vec![key("← / →"),      desc("Scrub history (when paused)")]),
+        Line::from(vec![key("Esc"),        desc("Exit filter / cancel / unpause")]),
         Line::from(""),
         Line::from(Span::styled(
             "Press any key to close",
@@ -408,7 +401,8 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect) {
     ];
 
     let block = Block::default()
-        .title(" Help ")
+        .title(" Help — ? to toggle ")
+        .title_style(Style::default().fg(Color::Yellow))
         .borders(Borders::ALL)
         .style(Style::default().bg(Color::Black));
 
