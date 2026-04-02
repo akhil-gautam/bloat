@@ -267,6 +267,7 @@ pub struct App {
     pub alert_engine: crate::alerts::AlertEngine,
     pub history: crate::history::History,
     pub plugin_manager: crate::plugins::protocol::PluginManager,
+    pub lua_engine: crate::plugins::lua_engine::LuaEngine,
 }
 
 impl App {
@@ -300,6 +301,11 @@ impl App {
                 let mut pm = crate::plugins::protocol::PluginManager::new();
                 pm.load_from_dir();
                 pm
+            },
+            lua_engine: {
+                let mut le = crate::plugins::lua_engine::LuaEngine::new();
+                le.load_scripts();
+                le
             },
         }
     }
@@ -1115,6 +1121,20 @@ pub fn run(mut terminal: DefaultTerminal, mut app: App) -> std::io::Result<()> {
                         .collect(),
                 };
                 app.plugin_manager.tick(&tick_msg);
+
+                // Feed system data to Lua scripted plugins.
+                let lua_processes: Vec<(u32, String, f32, u64)> = snap
+                    .processes
+                    .iter()
+                    .take(50)
+                    .map(|p| (p.pid, p.name.clone(), p.cpu_percent, p.mem_bytes))
+                    .collect();
+                app.lua_engine.tick(
+                    snap.cpu_usage_total,
+                    snap.mem_used,
+                    snap.mem_total,
+                    &lua_processes,
+                );
             }
         }
 

@@ -59,7 +59,8 @@ fn draw_main(frame: &mut Frame, app: &App) {
 
             if let Some(snap) = snap_to_draw {
                 let plugin_responses = app.plugin_manager.responses();
-                htop::draw(frame, snap, &app.system_tab, &app.alert_engine.alerts, &app.history, &plugin_responses, chunks[1]);
+                let lua_panels = app.lua_engine.outputs();
+                htop::draw(frame, snap, &app.system_tab, &app.alert_engine.alerts, &app.history, &plugin_responses, lua_panels, chunks[1]);
             } else {
                 let p = Paragraph::new("Loading system stats...")
                     .alignment(Alignment::Center)

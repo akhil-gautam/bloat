@@ -20,6 +20,7 @@ dirs = "6"
 sysinfo = "0.33"
 notify-rust = "4"
 toml = "0.8"
+mlua = { version = "0.10", features = ["lua54", "vendored"] }
 
 [dev-dependencies]
 tempfile = "3"

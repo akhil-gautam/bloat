@@ -20,6 +20,7 @@ pub fn draw(
     alerts: &[Alert],
     history: &crate::history::History,
     plugin_responses: &[&crate::plugins::protocol::PanelResponse],
+    lua_panels: &[crate::plugins::lua_engine::LuaPanel],
     area: Rect,
 ) {
     // Determine whether we need a scrubber bar (1 line) when paused
@@ -69,7 +70,7 @@ pub fn draw(
         draw_alert_bar(frame, alerts, has_critical, rows[1]);
     }
 
-    draw_top_panels(frame, snap, rows[2]);
+    draw_top_panels(frame, snap, lua_panels, rows[2]);
 
     // Render external plugin panels below the top panels
     if plugin_height > 0 {
@@ -361,17 +362,27 @@ fn draw_anomaly_bar(
 // Top panel — two-column layout
 // ---------------------------------------------------------------------------
 
-fn draw_top_panels(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
+fn draw_top_panels(
+    frame: &mut Frame,
+    snap: &SystemSnapshot,
+    lua_panels: &[crate::plugins::lua_engine::LuaPanel],
+    area: Rect,
+) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(area);
 
-    draw_left_column(frame, snap, cols[0]);
-    draw_right_column(frame, snap, cols[1]);
+    draw_left_column(frame, snap, lua_panels, cols[0]);
+    draw_right_column(frame, snap, lua_panels, cols[1]);
 }
 
-fn draw_left_column(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
+fn draw_left_column(
+    frame: &mut Frame,
+    snap: &SystemSnapshot,
+    lua_panels: &[crate::plugins::lua_engine::LuaPanel],
+    area: Rect,
+) {
     // Sub-rows: CPU, Network (with per-app + sparklines), Disk I/O, GPU, plugin panels (left)
     let sparkline_extra: u16 = if snap.network.is_some() && !snap.net_recv_history.is_empty() { 1 } else { 0 };
     let net_height = 3 + snap.net_apps.len().min(6) as u16 + sparkline_extra; // header + apps + sparkline
@@ -384,7 +395,12 @@ fn draw_left_column(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
         .filter(|p| p.position == "left")
         .collect();
 
-    // Build constraints: fixed panels first, then one per left plugin
+    let left_lua: Vec<&crate::plugins::lua_engine::LuaPanel> = lua_panels
+        .iter()
+        .filter(|p| p.position == "left")
+        .collect();
+
+    // Build constraints: fixed panels first, then one per left plugin, then one per left Lua panel
     let mut constraints = vec![
         Constraint::Min(4),                        // CPU
         Constraint::Length(net_height.max(4)),     // Network
@@ -393,6 +409,10 @@ fn draw_left_column(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
     ];
     for plugin in &left_plugins {
         let height = (plugin.lines.len().max(1) as u16 + 2).min(22); // +2 for border
+        constraints.push(Constraint::Length(height));
+    }
+    for panel in &left_lua {
+        let height = (panel.lines.len().max(1) as u16 + 2).min(22);
         constraints.push(Constraint::Length(height));
     }
 
@@ -411,9 +431,21 @@ fn draw_left_column(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
             draw_plugin_panel(frame, plugin, *area);
         }
     }
+
+    let lua_offset = 4 + left_plugins.len();
+    for (i, panel) in left_lua.iter().enumerate() {
+        if let Some(area) = sub.get(lua_offset + i) {
+            draw_lua_panel(frame, panel, *area);
+        }
+    }
 }
 
-fn draw_right_column(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
+fn draw_right_column(
+    frame: &mut Frame,
+    snap: &SystemSnapshot,
+    lua_panels: &[crate::plugins::lua_engine::LuaPanel],
+    area: Rect,
+) {
     let has_containers = !snap.containers.is_empty();
 
     let right_plugins: Vec<&PanelOutput> = snap
@@ -422,7 +454,12 @@ fn draw_right_column(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
         .filter(|p| p.position == "right")
         .collect();
 
-    // Build plugin constraints
+    let right_lua: Vec<&crate::plugins::lua_engine::LuaPanel> = lua_panels
+        .iter()
+        .filter(|p| p.position == "right")
+        .collect();
+
+    // Build plugin constraints (TOML config-driven panels)
     let mut plugin_constraints: Vec<Constraint> = right_plugins
         .iter()
         .map(|p| {
@@ -431,8 +468,17 @@ fn draw_right_column(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
         })
         .collect();
 
+    // Lua panel constraints
+    let mut lua_constraints: Vec<Constraint> = right_lua
+        .iter()
+        .map(|p| {
+            let height = (p.lines.len().max(1) as u16 + 2).min(22);
+            Constraint::Length(height)
+        })
+        .collect();
+
     if has_containers {
-        // Sub-rows: Memory, Battery, Volumes (shrunk), Containers, right plugins
+        // Sub-rows: Memory, Battery, Volumes (shrunk), Containers, right plugins, right Lua panels
         let mut constraints = vec![
             Constraint::Min(5),    // Memory
             Constraint::Length(3), // Battery
@@ -440,6 +486,7 @@ fn draw_right_column(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
             Constraint::Min(4),    // Containers
         ];
         constraints.append(&mut plugin_constraints);
+        constraints.append(&mut lua_constraints);
 
         let sub = Layout::default()
             .direction(Direction::Vertical)
@@ -456,14 +503,21 @@ fn draw_right_column(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
                 draw_plugin_panel(frame, plugin, *area);
             }
         }
+        let lua_offset = 4 + right_plugins.len();
+        for (i, panel) in right_lua.iter().enumerate() {
+            if let Some(area) = sub.get(lua_offset + i) {
+                draw_lua_panel(frame, panel, *area);
+            }
+        }
     } else {
-        // Original layout: Memory, Battery, Volumes, right plugins
+        // Original layout: Memory, Battery, Volumes, right plugins, right Lua panels
         let mut constraints = vec![
             Constraint::Min(5),    // Memory
             Constraint::Length(3), // Battery
             Constraint::Min(3),    // Volumes
         ];
         constraints.append(&mut plugin_constraints);
+        constraints.append(&mut lua_constraints);
 
         let sub = Layout::default()
             .direction(Direction::Vertical)
@@ -477,6 +531,12 @@ fn draw_right_column(frame: &mut Frame, snap: &SystemSnapshot, area: Rect) {
         for (i, plugin) in right_plugins.iter().enumerate() {
             if let Some(area) = sub.get(3 + i) {
                 draw_plugin_panel(frame, plugin, *area);
+            }
+        }
+        let lua_offset = 3 + right_plugins.len();
+        for (i, panel) in right_lua.iter().enumerate() {
+            if let Some(area) = sub.get(lua_offset + i) {
+                draw_lua_panel(frame, panel, *area);
             }
         }
     }
@@ -522,6 +582,67 @@ fn draw_plugin_panel(frame: &mut Frame, plugin: &PanelOutput, area: Rect) {
             .lines
             .iter()
             .map(|l| Line::from(Span::styled(l.clone(), Style::default().fg(color))))
+            .collect()
+    };
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn draw_lua_panel(
+    frame: &mut Frame,
+    panel: &crate::plugins::lua_engine::LuaPanel,
+    area: Rect,
+) {
+    fn parse_color(s: &str) -> Color {
+        match s {
+            "red" => Color::Red,
+            "green" => Color::Green,
+            "yellow" => Color::Yellow,
+            "blue" => Color::Blue,
+            "cyan" => Color::Cyan,
+            "magenta" => Color::Magenta,
+            "gray" | "grey" => Color::Gray,
+            "white" => Color::White,
+            _ => Color::White,
+        }
+    }
+
+    let title_color = panel
+        .color
+        .as_deref()
+        .map(parse_color)
+        .unwrap_or(Color::Cyan);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {} ", panel.name))
+        .title_style(Style::default().fg(title_color).add_modifier(Modifier::BOLD));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
+
+    let lines: Vec<Line> = if panel.lines.is_empty() {
+        vec![Line::from(Span::styled(
+            "(no output)",
+            Style::default().fg(Color::DarkGray),
+        ))]
+    } else {
+        panel
+            .lines
+            .iter()
+            .take(inner.height as usize)
+            .map(|line| {
+                let color = line.color.as_deref().map(parse_color).unwrap_or(Color::White);
+                let mut style = Style::default().fg(color);
+                if line.bold {
+                    style = style.add_modifier(Modifier::BOLD);
+                }
+                Line::from(Span::styled(line.text.clone(), style))
+            })
             .collect()
     };
 
