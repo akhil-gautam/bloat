@@ -1173,6 +1173,7 @@ fn chrono_now() -> String {
 
 pub fn run(mut terminal: DefaultTerminal, mut app: App) -> std::io::Result<()> {
     let mut rx: Option<mpsc::Receiver<ScanProgress>> = None;
+    let mut last_snapshot = std::time::Instant::now() - std::time::Duration::from_secs(10);
 
     loop {
         // Check quit first — before any auto-start logic
@@ -1188,10 +1189,18 @@ pub fn run(mut terminal: DefaultTerminal, mut app: App) -> std::io::Result<()> {
             rx = Some(app.start_scan());
         }
 
-        // Always collect a live snapshot so the alert engine stays current.
-        // When paused, we don't replace sys_snapshot (which holds the live view
-        // used as the base for the UI), but we still run alerts against fresh data.
-        {
+        // Throttle snapshot collection. snapshot_with_threads rebuilds the
+        // full process Vec on every call (heavy: hundreds of procs, String
+        // allocations, cmd-line clones), so calling it on every 33 ms tick
+        // makes every screen feel laggy. The System tab needs ~4 fps to feel
+        // live; other tabs only need the alert engine to stay current.
+        let snapshot_interval = if app.tab == Tab::System {
+            std::time::Duration::from_millis(250)
+        } else {
+            std::time::Duration::from_millis(1000)
+        };
+        if last_snapshot.elapsed() >= snapshot_interval {
+            last_snapshot = std::time::Instant::now();
             let expanded_pid = app.system_tab.expanded_pid;
             let snap = app.sys_monitor.snapshot_with_threads(
                 std::time::Duration::from_secs(1),

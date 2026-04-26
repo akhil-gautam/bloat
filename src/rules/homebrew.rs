@@ -4,7 +4,6 @@
 // and /Users/<user>/Library/Caches/Homebrew on Intel; we just probe both.
 
 use std::path::PathBuf;
-use std::process::Command;
 
 use crate::tree::FsTree;
 
@@ -23,21 +22,17 @@ impl CleanupRule for HomebrewCacheRule {
     fn safety(&self) -> Safety { Safety::Safe }
 
     fn detect(&self, _tree: &FsTree) -> Vec<CleanupItem> {
+        // Probe well-known cache paths directly — never spawn `brew --cache`,
+        // which costs ~1s of Ruby startup per scan.
         let mut paths: Vec<PathBuf> = Vec::new();
-
-        if let Ok(out) = Command::new("brew").arg("--cache").output() {
-            if out.status.success() {
-                let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if !p.is_empty() {
-                    paths.push(PathBuf::from(p));
-                }
-            }
-        }
-        if paths.is_empty() {
-            if let Some(home) = dirs::home_dir() {
-                let p = home.join("Library/Caches/Homebrew");
-                if p.exists() {
-                    paths.push(p);
+        if let Some(home) = dirs::home_dir() {
+            for candidate in [
+                home.join("Library/Caches/Homebrew"),
+                PathBuf::from("/opt/homebrew/Library/Homebrew/cache"),
+                PathBuf::from("/usr/local/Library/Homebrew/cache"),
+            ] {
+                if candidate.exists() {
+                    paths.push(candidate);
                 }
             }
         }
