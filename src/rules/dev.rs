@@ -62,6 +62,8 @@ fn make_item(
         impact: impact.to_string(),
         category,
         safety,
+        requires_admin: false,
+        required_tier: None,
     })
 }
 

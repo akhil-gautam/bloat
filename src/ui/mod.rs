@@ -3,6 +3,7 @@ pub mod explorer;
 pub mod htop;
 pub mod logs;
 pub mod overview;
+pub mod permissions;
 
 use ratatui::{
     Frame,
@@ -43,6 +44,7 @@ fn draw_main(frame: &mut Frame, app: &App) {
         Tab::Explorer => explorer::draw(frame, app, chunks[1]),
         Tab::Cleanup => cleanup::draw(frame, app, chunks[1]),
         Tab::Logs => logs::draw(frame, app, chunks[1]),
+        Tab::Permissions => permissions::draw(frame, app, chunks[1]),
         Tab::System => {
             // When paused with a valid history index, build a synthetic snapshot
             // from the historical data point so the UI shows past state.
@@ -242,6 +244,14 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
         ("[2 Explorer]", "2 Explorer", Tab::Explorer),
         ("[3 Cleanup]", "3 Cleanup", Tab::Cleanup),
     ];
+    let perm_label = {
+        let caps = &app.capabilities;
+        let granted = [caps.full_disk_access, caps.admin, caps.accessibility]
+            .iter()
+            .filter(|b| **b)
+            .count();
+        format!("[5 Perms ({}/4)]", granted)
+    };
 
     let mut tab_spans: Vec<Span> = Vec::new();
     for (label, _, tab) in &tab_labels {
@@ -260,6 +270,15 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(Color::DarkGray)
     };
     tab_spans.push(Span::styled(&log_label, log_style));
+    tab_spans.push(Span::raw(" "));
+
+    // Permissions tab
+    let perm_style = if app.tab == Tab::Permissions {
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    tab_spans.push(Span::styled(&perm_label, perm_style));
     tab_spans.push(Span::raw(" "));
 
     // System tab — accessed via 's', not a numbered tab
@@ -313,10 +332,45 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             dot.clone(),
             Span::styled("Scanning...", Style::default().fg(Color::Yellow)),
         ])
+    } else if let Some(action) = &app.pending_admin_action {
+        let label = match action {
+            crate::app::PendingAdminAction::Purge => "Purge inactive memory? [y/N]",
+            crate::app::PendingAdminAction::FlushDns => "Flush DNS cache? [y/N]",
+        };
+        Line::from(vec![
+            Span::styled(" ", dim),
+            Span::styled(label, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        ])
+    } else if let Some(result) = &app.last_action {
+        let color = if result.success { Color::Green } else { Color::Red };
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(&result.label, Style::default().fg(color).add_modifier(Modifier::BOLD)),
+            Span::styled(": ", dim),
+            Span::styled(&result.message, Style::default().fg(Color::Gray)),
+        ])
+    } else if app.tab == Tab::System {
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled("P", key),
+            Span::styled(": purge", dim),
+            dot.clone(),
+            Span::styled("F", key),
+            Span::styled(": flush DNS", dim),
+            dot.clone(),
+            Span::styled("S/R", key),
+            Span::styled(": suspend/resume", dim),
+            dot.clone(),
+            Span::styled("K", key),
+            Span::styled(": kill", dim),
+            dot.clone(),
+            Span::styled("5", key),
+            Span::styled(": permissions", dim),
+        ])
     } else {
         Line::from(vec![
             Span::raw(" "),
-            Span::styled("1-4", key),
+            Span::styled("1-5", key),
             Span::styled(": tabs", dim),
             dot.clone(),
             Span::styled("s", key),

@@ -1,0 +1,10 @@
+# Brew cleanup status panel — shows reclaimable Homebrew bytes.
+# Copy alongside your existing plugins.toml (`brew cleanup --dry-run`
+# does not modify state, so this is safe to poll).
+
+[[panel]]
+name = "Brew Cleanup"
+command = "brew cleanup --dry-run 2>/dev/null | tail -3"
+interval = 60
+position = "left"
+color = "yellow"

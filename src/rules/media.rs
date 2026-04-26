@@ -107,6 +107,8 @@ impl CleanupRule for DuplicateFilesRule {
             impact: self.impact().to_string(),
             category: self.category(),
             safety: self.safety(),
+            requires_admin: false,
+            required_tier: None,
         }]
     }
 }
@@ -189,6 +191,8 @@ impl CleanupRule for LargeUnusedFilesRule {
             impact: self.impact().to_string(),
             category: self.category(),
             safety: self.safety(),
+            requires_admin: false,
+            required_tier: None,
         }]
     }
 }

@@ -19,6 +19,9 @@ pub struct CleanResult {
 pub enum DeleteMethod {
     Trash,
     Permanent,
+    /// Delete via `rm -rf` wrapped in a single `osascript ... with administrator
+    /// privileges` call. One auth prompt covers every path in this CleanResult.
+    Admin,
 }
 
 // ---------------------------------------------------------------------------
@@ -42,6 +45,10 @@ pub fn permanent_delete(path: &Path) -> Result<(), String> {
 // ---------------------------------------------------------------------------
 
 pub fn clean_item(item: &CleanupItem, method: DeleteMethod) -> CleanResult {
+    if method == DeleteMethod::Admin {
+        return clean_item_admin(item);
+    }
+
     let mut freed_bytes: u64 = 0;
     let mut paths_removed: usize = 0;
     let mut paths_failed: Vec<(PathBuf, String)> = Vec::new();
@@ -63,6 +70,7 @@ pub fn clean_item(item: &CleanupItem, method: DeleteMethod) -> CleanResult {
         let result = match method {
             DeleteMethod::Trash => trash_path(path),
             DeleteMethod::Permanent => permanent_delete(path),
+            DeleteMethod::Admin => unreachable!(),
         };
 
         match result {
@@ -84,6 +92,138 @@ pub fn clean_item(item: &CleanupItem, method: DeleteMethod) -> CleanResult {
     }
 }
 
+/// Delete every path in `item` under one administrator-privileges prompt.
+///
+/// We size each path before deletion (still readable to the current user
+/// for most admin-tier paths), then issue a single `osascript` call that
+/// runs `rm -rf` over the joined, shell-quoted argument list.
+fn clean_item_admin(item: &CleanupItem) -> CleanResult {
+    // Special path: APFS local snapshots, encoded as virtual paths
+    // "__apfs_snapshot__/<date>" by ApfsLocalSnapshotsRule.
+    if item.paths.iter().all(|p| {
+        p.to_string_lossy().starts_with("__apfs_snapshot__/")
+    }) {
+        return clean_apfs_snapshots(item);
+    }
+
+    let mut freed_bytes: u64 = 0;
+    let mut paths_failed: Vec<(PathBuf, String)> = Vec::new();
+    let mut existing: Vec<&PathBuf> = Vec::new();
+
+    for path in &item.paths {
+        if !path.exists() {
+            continue;
+        }
+        let size = if path.is_dir() {
+            dir_size(path)
+        } else {
+            path.metadata().map(|m| m.len()).unwrap_or(0)
+        };
+        freed_bytes += size;
+        existing.push(path);
+    }
+
+    if existing.is_empty() {
+        return CleanResult {
+            item_name: item.name.clone(),
+            freed_bytes: 0,
+            paths_removed: 0,
+            paths_failed: Vec::new(),
+        };
+    }
+
+    let quoted: Vec<String> = existing
+        .iter()
+        .map(|p| shell_quote(&p.to_string_lossy()))
+        .collect();
+    let cmd = format!("/bin/rm -rf {}", quoted.join(" "));
+
+    match crate::memory_actions::run_admin(&cmd) {
+        Ok(_) => {
+            // Re-check; anything still present counts as a failure.
+            let mut removed = 0;
+            for p in &existing {
+                if p.exists() {
+                    paths_failed.push(((*p).clone(), "still present after admin rm".into()));
+                } else {
+                    removed += 1;
+                }
+            }
+            CleanResult {
+                item_name: item.name.clone(),
+                freed_bytes,
+                paths_removed: removed,
+                paths_failed,
+            }
+        }
+        Err(e) => CleanResult {
+            item_name: item.name.clone(),
+            freed_bytes: 0,
+            paths_removed: 0,
+            paths_failed: existing.into_iter().map(|p| (p.clone(), e.clone())).collect(),
+        },
+    }
+}
+
+/// Delete each APFS local snapshot encoded as `__apfs_snapshot__/<date>`
+/// using a single batched `tmutil deletelocalsnapshots` call per date.
+fn clean_apfs_snapshots(item: &CleanupItem) -> CleanResult {
+    let dates: Vec<String> = item
+        .paths
+        .iter()
+        .filter_map(|p| {
+            p.to_string_lossy()
+                .strip_prefix("__apfs_snapshot__/")
+                .map(str::to_string)
+        })
+        .collect();
+
+    if dates.is_empty() {
+        return CleanResult {
+            item_name: item.name.clone(),
+            freed_bytes: 0,
+            paths_removed: 0,
+            paths_failed: Vec::new(),
+        };
+    }
+
+    let cmd = dates
+        .iter()
+        .map(|d| format!("/usr/bin/tmutil deletelocalsnapshots {}", shell_quote(d)))
+        .collect::<Vec<_>>()
+        .join(" && ");
+
+    match crate::memory_actions::run_admin(&cmd) {
+        Ok(_) => CleanResult {
+            item_name: item.name.clone(),
+            freed_bytes: 0,
+            paths_removed: dates.len(),
+            paths_failed: Vec::new(),
+        },
+        Err(e) => CleanResult {
+            item_name: item.name.clone(),
+            freed_bytes: 0,
+            paths_removed: 0,
+            paths_failed: item.paths.iter().map(|p| (p.clone(), e.clone())).collect(),
+        },
+    }
+}
+
+/// Single-quote a string for /bin/sh, escaping embedded single quotes.
+fn shell_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for ch in s.chars() {
+        if ch == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('\'');
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Method selection
 // ---------------------------------------------------------------------------
@@ -91,6 +231,16 @@ pub fn clean_item(item: &CleanupItem, method: DeleteMethod) -> CleanResult {
 /// Always returns Trash — permanent deletion is strictly opt-in.
 pub fn default_method(_safety: Safety) -> DeleteMethod {
     DeleteMethod::Trash
+}
+
+/// Pick the right deletion method for an item, accounting for admin-tier
+/// rules whose targets the user cannot reach without elevation.
+pub fn method_for(item: &CleanupItem) -> DeleteMethod {
+    if item.requires_admin {
+        DeleteMethod::Admin
+    } else {
+        default_method(item.safety)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -150,6 +300,8 @@ mod tests {
             impact: "low".to_string(),
             category: Category::Developer,
             safety: Safety::Safe,
+            requires_admin: false,
+            required_tier: None,
         }
     }
 
@@ -178,6 +330,8 @@ mod tests {
             impact: "none".to_string(),
             category: Category::System,
             safety: Safety::Safe,
+            requires_admin: false,
+            required_tier: None,
         };
 
         let result = clean_item(&item, DeleteMethod::Permanent);

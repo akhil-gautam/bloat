@@ -31,6 +31,7 @@ pub enum Tab {
     Cleanup,
     Logs,
     System,
+    Permissions,
 }
 
 // ---------------------------------------------------------------------------
@@ -268,6 +269,20 @@ pub struct App {
     pub history: crate::history::History,
     pub plugin_manager: crate::plugins::protocol::PluginManager,
     pub lua_engine: crate::plugins::lua_engine::LuaEngine,
+    pub capabilities: crate::permissions::Capabilities,
+    /// Last memory-action result, displayed briefly in the status bar.
+    pub last_action: Option<crate::memory_actions::ActionResult>,
+    /// Index of the currently-highlighted row in the Permissions tab.
+    pub permissions_selected: usize,
+    /// Set when the user has pressed P/F on the System tab and we need
+    /// confirmation before invoking an admin action.
+    pub pending_admin_action: Option<PendingAdminAction>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PendingAdminAction {
+    Purge,
+    FlushDns,
 }
 
 impl App {
@@ -307,7 +322,16 @@ impl App {
                 le.load_scripts();
                 le
             },
+            capabilities: crate::permissions::probe_all(),
+            last_action: None,
+            permissions_selected: 0,
+            pending_admin_action: None,
         }
+    }
+
+    /// Re-probe permission capabilities; used after the user grants access.
+    pub fn refresh_capabilities(&mut self) {
+        self.capabilities = crate::permissions::probe_all();
     }
 
     /// Starts an async scan. Returns the receiver end of the progress channel.
@@ -349,7 +373,7 @@ impl App {
 
     /// Called when the background scan completes with the resulting tree.
     pub fn on_scan_complete(&mut self, tree: FsTree) {
-        let registry = RuleRegistry::with_defaults();
+        let registry = RuleRegistry::with_caps(self.capabilities);
         self.analysis = Some(analyzer::analyze(&tree, &registry));
         self.tree = Some(tree);
         self.scanning = false;
@@ -423,22 +447,28 @@ impl App {
                 self.tab = Tab::System;
                 return;
             }
+            KeyCode::Char('5') => {
+                self.tab = Tab::Permissions;
+                return;
+            }
             KeyCode::Tab => {
                 self.tab = match self.tab {
                     Tab::Overview => Tab::Explorer,
                     Tab::Explorer => Tab::Cleanup,
                     Tab::Cleanup => Tab::Logs,
-                    Tab::Logs => Tab::Overview,
+                    Tab::Logs => Tab::Permissions,
+                    Tab::Permissions => Tab::Overview,
                     Tab::System => Tab::Overview, // s toggles in/out
                 };
                 return;
             }
             KeyCode::BackTab => {
                 self.tab = match self.tab {
-                    Tab::Overview => Tab::Logs,
+                    Tab::Overview => Tab::Permissions,
                     Tab::Explorer => Tab::Overview,
                     Tab::Cleanup => Tab::Explorer,
                     Tab::Logs => Tab::Cleanup,
+                    Tab::Permissions => Tab::Logs,
                     Tab::System => Tab::Logs,
                 };
                 return;
@@ -467,6 +497,32 @@ impl App {
             Tab::Cleanup => self.on_key_cleanup(key),
             Tab::Logs => {}    // read-only
             Tab::System => self.on_key_system(key),
+            Tab::Permissions => self.on_key_permissions(key),
+        }
+    }
+
+    fn on_key_permissions(&mut self, key: KeyEvent) {
+        use crate::permissions::Tier;
+        let tiers = [Tier::FullDiskAccess, Tier::Admin, Tier::Accessibility, Tier::Automation];
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.permissions_selected + 1 < tiers.len() {
+                    self.permissions_selected += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if self.permissions_selected > 0 {
+                    self.permissions_selected -= 1;
+                }
+            }
+            KeyCode::Char('o') | KeyCode::Enter => {
+                let tier = tiers[self.permissions_selected];
+                crate::permissions::open_settings_for(tier);
+            }
+            KeyCode::Char('r') => {
+                self.refresh_capabilities();
+            }
+            _ => {}
         }
     }
 
@@ -603,6 +659,8 @@ impl App {
                     impact: "".to_string(),
                     category: crate::rules::Category::System,
                     safety: crate::rules::Safety::Caution,
+                    requires_admin: false,
+                    required_tier: None,
                 };
                 let method = crate::cleaner::DeleteMethod::Trash;
                 let result = crate::cleaner::clean_item(&item, method);
@@ -705,6 +763,33 @@ impl App {
                 }
                 _ => {
                     self.system_tab.confirm_kill = false;
+                }
+            }
+            return;
+        }
+
+        // Pending admin-action confirmation (purge / flush DNS).
+        if let Some(action) = self.pending_admin_action {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    self.pending_admin_action = None;
+                    let result = match action {
+                        PendingAdminAction::Purge => crate::memory_actions::purge_memory(),
+                        PendingAdminAction::FlushDns => crate::memory_actions::flush_dns(),
+                    };
+                    self.logs.push(LogEntry {
+                        timestamp: chrono_now(),
+                        name: result.label.clone(),
+                        size: 0,
+                        method: if result.success { "Admin".into() } else { "Failed".into() },
+                        success: result.success,
+                        error: if result.success { None } else { Some(result.message.clone()) },
+                    });
+                    self.last_action = Some(result);
+                    self.refresh_capabilities();
+                }
+                _ => {
+                    self.pending_admin_action = None;
                 }
             }
             return;
@@ -846,6 +931,42 @@ impl App {
                     self.system_tab.confirm_kill = true;
                 }
             }
+            // Memory actions: purge / flush DNS (admin-tier).
+            KeyCode::Char('P') => {
+                self.pending_admin_action = Some(PendingAdminAction::Purge);
+            }
+            KeyCode::Char('F') => {
+                self.pending_admin_action = Some(PendingAdminAction::FlushDns);
+            }
+            // Suspend / resume the highlighted process.
+            KeyCode::Char('S') => {
+                if let Some(pid) = self.selected_pid() {
+                    let result = crate::memory_actions::suspend_process(pid);
+                    self.logs.push(LogEntry {
+                        timestamp: chrono_now(),
+                        name: result.label.clone(),
+                        size: 0,
+                        method: "Signal".into(),
+                        success: result.success,
+                        error: if result.success { None } else { Some(result.message.clone()) },
+                    });
+                    self.last_action = Some(result);
+                }
+            }
+            KeyCode::Char('R') => {
+                if let Some(pid) = self.selected_pid() {
+                    let result = crate::memory_actions::resume_process(pid);
+                    self.logs.push(LogEntry {
+                        timestamp: chrono_now(),
+                        name: result.label.clone(),
+                        size: 0,
+                        method: "Signal".into(),
+                        success: result.success,
+                        error: if result.success { None } else { Some(result.message.clone()) },
+                    });
+                    self.last_action = Some(result);
+                }
+            }
             // Expand / collapse thread view for the selected process
             KeyCode::Char('e') if self.system_tab.group_mode == GroupMode::None => {
                 if let Some(pid) = self.selected_pid() {
@@ -966,7 +1087,7 @@ impl App {
         let now = chrono_now();
         for &idx in &indices {
             if let Some(item) = analysis.items.get(idx) {
-                let method = crate::cleaner::default_method(item.safety);
+                let method = crate::cleaner::method_for(item);
                 let result = crate::cleaner::clean_item(item, method);
                 self.logs.push(LogEntry {
                     timestamp: now.clone(),

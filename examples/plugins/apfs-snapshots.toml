@@ -1,0 +1,17 @@
+# APFS local snapshots inventory — read-only, no admin needed.
+# Use the System Caches admin rule (in the Cleanup tab) to actually
+# delete snapshots; this panel only reports what's there.
+
+[[panel]]
+name = "APFS Snapshots"
+command = "tmutil listlocalsnapshots / 2>/dev/null | wc -l | awk '{print $1\" snapshots\"}'"
+interval = 30
+position = "right"
+color = "magenta"
+
+[[panel]]
+name = "Simulators (stale)"
+command = "xcrun simctl list devices 2>/dev/null | grep -c unavailable || echo 0"
+interval = 60
+position = "right"
+color = "blue"
