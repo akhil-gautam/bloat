@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - "v*"
+      - "v[0-9]*"   # CLI release tags (v0.2.1, v1.0, …); bloatmac uses bloatmac-v* and is handled by release-bloatmac.yml
 
 permissions:
   contents: write

@@ -1,0 +1,49 @@
+name: Bump Homebrew cask (BloatMac)
+
+# Triggers when the BloatMac release workflow finishes successfully on a tag.
+# Opens a PR against the user's tap repo updating Casks/bloatmac.rb with the new
+# version + sha256.
+
+on:
+  workflow_run:
+    workflows: ["Release BloatMac"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  bump:
+    if: ${{ github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch, 'bloatmac-v') }}
+    runs-on: macos-latest
+    env:
+      TAG_NAME: ${{ github.event.workflow_run.head_branch }}
+    steps:
+      - name: Strip version
+        id: ver
+        run: |
+          VERSION="${TAG_NAME#bloatmac-v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "url=https://github.com/${{ github.repository }}/releases/download/${TAG_NAME}/BloatMac-v${VERSION}-macos.dmg" >> "$GITHUB_OUTPUT"
+
+      - name: Download release dmg & compute SHA-256
+        id: sha
+        run: |
+          curl -fsSL -o BloatMac.dmg "${{ steps.ver.outputs.url }}"
+          SHA="$(shasum -a 256 BloatMac.dmg | cut -d' ' -f1)"
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Open bump PR against tap
+        uses: dawidd6/action-homebrew-bump-formula@v4
+        with:
+          # Personal access token (classic) with `public_repo` scope, stored as
+          # secret HOMEBREW_TAP_TOKEN. Configure once per repo.
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          tap: akhil-gautam/homebrew-tap
+          cask: bloatmac
+          tag: ${{ env.TAG_NAME }}
+          revision: ${{ github.event.workflow_run.head_sha }}
+          force: false
+          # If the action exposes explicit URL/sha overrides for casks, prefer them:
+          # url: ${{ steps.ver.outputs.url }}
+          # sha256: ${{ steps.sha.outputs.sha256 }}

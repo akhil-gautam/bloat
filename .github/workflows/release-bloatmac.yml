@@ -1,0 +1,148 @@
+name: Release BloatMac
+
+on:
+  push:
+    tags:
+      - "bloatmac-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build & ship BloatMac.app
+    runs-on: macos-15
+    env:
+      TAG_NAME: ${{ github.ref_name }}
+      DERIVED_DATA: ${{ github.workspace }}/derived
+    defaults:
+      run:
+        working-directory: bloatmac
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          # Pick the highest Xcode 16.x or 26.x available (BloatMac requires the macOS 26 SDK
+          # for Foundation Models). Falls back to whichever Xcode is currently selected.
+          set +e
+          for path in \
+            /Applications/Xcode_26.app \
+            /Applications/Xcode_16.4.app \
+            /Applications/Xcode_16.3.app \
+            /Applications/Xcode.app
+          do
+            if [ -d "$path" ]; then
+              sudo xcode-select -s "$path/Contents/Developer"
+              break
+            fi
+          done
+          xcodebuild -version
+
+      - name: Strip BloatMac version from tag
+        id: ver
+        run: |
+          # bloatmac-v0.1.0 → 0.1.0
+          VERSION="${TAG_NAME#bloatmac-v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build (Debug-free Release, ad-hoc signed, universal)
+        run: |
+          xcodebuild \
+            -project bloatmac.xcodeproj \
+            -scheme bloatmac \
+            -configuration Release \
+            -destination "generic/platform=macOS" \
+            -derivedDataPath "$DERIVED_DATA" \
+            ONLY_ACTIVE_ARCH=NO \
+            ARCHS="arm64 x86_64" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            DEVELOPMENT_TEAM= \
+            PROVISIONING_PROFILE_SPECIFIER= \
+            MARKETING_VERSION="${{ steps.ver.outputs.version }}" \
+            CURRENT_PROJECT_VERSION="${{ steps.ver.outputs.version }}" \
+            build
+
+      - name: Locate built app
+        id: appPath
+        run: |
+          APP="$(find "$DERIVED_DATA/Build/Products/Release" -maxdepth 1 -name 'bloatmac.app' -type d -print -quit)"
+          if [ -z "$APP" ]; then
+            echo "::error::Could not find bloatmac.app in $DERIVED_DATA"
+            exit 1
+          fi
+          # Rename to BloatMac.app for nicer Finder presentation
+          STAGED="${RUNNER_TEMP}/BloatMac.app"
+          rm -rf "$STAGED"
+          cp -R "$APP" "$STAGED"
+          echo "app=$STAGED" >> "$GITHUB_OUTPUT"
+
+      - name: Strip extended attributes & quarantine bits
+        run: |
+          xattr -cr "${{ steps.appPath.outputs.app }}"
+
+      - name: Re-sign with ad-hoc signature so Gatekeeper allows launch after un-quarantine
+        run: |
+          codesign --force --deep --sign - "${{ steps.appPath.outputs.app }}"
+          codesign --verify --deep --strict --verbose=2 "${{ steps.appPath.outputs.app }}" || true
+
+      - name: Package zip
+        run: |
+          cd "$RUNNER_TEMP"
+          ZIP="BloatMac-${TAG_NAME#bloatmac-}-macos.zip"
+          ditto -c -k --keepParent BloatMac.app "$ZIP"
+          mv "$ZIP" "$GITHUB_WORKSPACE/$ZIP"
+          echo "ZIP=$ZIP" >> "$GITHUB_ENV"
+
+      - name: Package dmg
+        run: |
+          cd "$RUNNER_TEMP"
+          DMG="BloatMac-${TAG_NAME#bloatmac-}-macos.dmg"
+          # Create a staging dir with a symlink to /Applications for drag-to-install UX
+          STAGING="$RUNNER_TEMP/dmg-stage"
+          rm -rf "$STAGING"; mkdir "$STAGING"
+          cp -R BloatMac.app "$STAGING/"
+          ln -s /Applications "$STAGING/Applications"
+          hdiutil create -volname "BloatMac" -srcfolder "$STAGING" -ov -format UDZO "$DMG"
+          mv "$DMG" "$GITHUB_WORKSPACE/$DMG"
+          echo "DMG=$DMG" >> "$GITHUB_ENV"
+
+      - name: Compute SHA256 checksums
+        working-directory: ${{ github.workspace }}
+        run: |
+          shasum -a 256 "$ZIP" "$DMG" > "BloatMac-${TAG_NAME#bloatmac-}-checksums.txt"
+          cat "BloatMac-${TAG_NAME#bloatmac-}-checksums.txt"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          name: BloatMac ${{ steps.ver.outputs.version }}
+          generate_release_notes: true
+          body: |
+            ## BloatMac ${{ steps.ver.outputs.version }}
+
+            Native SwiftUI macOS companion app for the `bloat` CLI.
+
+            ### Install
+
+            **Homebrew (recommended)**
+            ```sh
+            brew install --cask akhil-gautam/tap/bloatmac
+            ```
+
+            **Manual download**
+            Grab the `.dmg` below, open it, and drag BloatMac.app into Applications.
+
+            ### Notes
+
+            The app is **ad-hoc signed**, not Developer-ID-signed. On first launch macOS may
+            warn about an unidentified developer — right-click the app → Open, or run
+            `xattr -dr com.apple.quarantine /Applications/BloatMac.app` once.
+          files: |
+            ${{ github.workspace }}/BloatMac-*-macos.zip
+            ${{ github.workspace }}/BloatMac-*-macos.dmg
+            ${{ github.workspace }}/BloatMac-*-checksums.txt
