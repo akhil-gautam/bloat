@@ -1,2 +1,13 @@
 target/
 .superpowers/
+
+# Xcode user-specific state (per-developer, never commit)
+**/xcuserdata/
+**/UserInterfaceState.xcuserstate
+**/*.xcuserstate
+DerivedData/
+
+# Build artifacts
+build/
+*.dmg
+*.zip
