@@ -1,8 +1,12 @@
 name: Bump Homebrew cask (BloatMac)
 
-# Triggers when the BloatMac release workflow finishes successfully on a tag.
-# Opens a PR against the user's tap repo updating Casks/bloatmac.rb with the new
-# version + sha256.
+# Triggers when the BloatMac release workflow finishes successfully on a
+# bloatmac-v* tag. Opens a PR against akhil-gautam/homebrew-tap updating
+# Casks/bloatmac.rb with the new version + sha256.
+#
+# Requires repo secret HOMEBREW_TAP_TOKEN — a fine-grained PAT with
+# Contents: read/write + Pull requests: read/write on
+# akhil-gautam/homebrew-tap (or a classic PAT with `public_repo`).
 
 on:
   workflow_run:
@@ -15,35 +19,88 @@ permissions:
 jobs:
   bump:
     if: ${{ github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch, 'bloatmac-v') }}
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     env:
       TAG_NAME: ${{ github.event.workflow_run.head_branch }}
+      TAP_REPO: akhil-gautam/homebrew-tap
+      GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
     steps:
-      - name: Strip version
+      - name: Strip version & compute URL
         id: ver
         run: |
           VERSION="${TAG_NAME#bloatmac-v}"
+          URL="https://github.com/${{ github.repository }}/releases/download/${TAG_NAME}/BloatMac-v${VERSION}-macos.dmg"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "url=https://github.com/${{ github.repository }}/releases/download/${TAG_NAME}/BloatMac-v${VERSION}-macos.dmg" >> "$GITHUB_OUTPUT"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
 
-      - name: Download release dmg & compute SHA-256
+      - name: Download dmg & compute SHA-256
         id: sha
         run: |
           curl -fsSL -o BloatMac.dmg "${{ steps.ver.outputs.url }}"
-          SHA="$(shasum -a 256 BloatMac.dmg | cut -d' ' -f1)"
+          SHA="$(sha256sum BloatMac.dmg | cut -d' ' -f1)"
           echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
 
-      - name: Open bump PR against tap
-        uses: dawidd6/action-homebrew-bump-formula@v4
+      - name: Checkout tap
+        uses: actions/checkout@v4
         with:
-          # Personal access token (classic) with `public_repo` scope, stored as
-          # secret HOMEBREW_TAP_TOKEN. Configure once per repo.
+          repository: ${{ env.TAP_REPO }}
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          tap: akhil-gautam/homebrew-tap
-          cask: bloatmac
-          tag: ${{ env.TAG_NAME }}
-          revision: ${{ github.event.workflow_run.head_sha }}
-          force: false
-          # If the action exposes explicit URL/sha overrides for casks, prefer them:
-          # url: ${{ steps.ver.outputs.url }}
-          # sha256: ${{ steps.sha.outputs.sha256 }}
+          path: tap
+
+      - name: Update cask file
+        working-directory: tap
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          SHA256: ${{ steps.sha.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          CASK="Casks/bloatmac.rb"
+          if [ ! -f "$CASK" ]; then
+            echo "::error::$CASK does not exist in $TAP_REPO — create it manually for the first release"
+            exit 1
+          fi
+          # Replace version "..." and sha256 "..." lines (assumes the same shape
+          # as the in-repo Casks/bloatmac.rb template).
+          python3 - <<PY
+          import pathlib, re, os
+          p = pathlib.Path("$CASK")
+          src = p.read_text()
+          src = re.sub(r'^(\s*version\s+)"[^"]*"', rf'\g<1>"{os.environ["VERSION"]}"', src, count=1, flags=re.M)
+          src = re.sub(r'^(\s*sha256\s+)"[^"]*"', rf'\g<1>"{os.environ["SHA256"]}"', src, count=1, flags=re.M)
+          p.write_text(src)
+          PY
+          git --no-pager diff "$CASK"
+
+      - name: Commit, push branch, open PR
+        working-directory: tap
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          BRANCH="bump-bloatmac-v${VERSION}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # If a branch from a previous attempt is open, reuse it.
+          git checkout -B "$BRANCH"
+          if git diff --quiet; then
+            echo "Cask already at v${VERSION} — nothing to do."
+            exit 0
+          fi
+          git add Casks/bloatmac.rb
+          git commit -m "bloatmac ${VERSION}"
+          git push -f origin "$BRANCH"
+          # Open PR if one isn't already open from this branch.
+          if ! gh pr view "$BRANCH" --repo "$TAP_REPO" >/dev/null 2>&1; then
+            gh pr create \
+              --repo "$TAP_REPO" \
+              --base main \
+              --head "$BRANCH" \
+              --title "bloatmac ${VERSION}" \
+              --body "Automated cask bump for [BloatMac ${VERSION}](https://github.com/${{ github.repository }}/releases/tag/${TAG_NAME}).
+
+          - version: \`${VERSION}\`
+          - sha256: \`${{ steps.sha.outputs.sha256 }}\`
+          - url: ${{ steps.ver.outputs.url }}"
+          else
+            echo "PR already open for $BRANCH"
+          fi
