@@ -4,6 +4,7 @@ import AppKit
 @main
 struct bloatmacApp: App {
     @StateObject private var state = AppState()
+    @Environment(\.scenePhase) private var scenePhase
 
     init() {
         // Apply persisted appearance synchronously, before any window opens,
@@ -22,6 +23,9 @@ struct bloatmacApp: App {
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentMinSize)
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { state.refreshPermissions() }
+        }
         .commands {
             CommandGroup(replacing: .newItem) {}
             CommandGroup(replacing: .appSettings) {

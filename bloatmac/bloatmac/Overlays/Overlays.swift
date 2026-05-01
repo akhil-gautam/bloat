@@ -114,6 +114,76 @@ struct MenuBarWidgetPopover: View {
     }
 }
 
+struct PermissionsGate: View {
+    @EnvironmentObject var state: AppState
+
+    private var fdaURL: URL {
+        URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")!
+    }
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.55).ignoresSafeArea()
+                .onTapGesture { /* swallow — modal */ }
+            VStack(alignment: .leading, spacing: 18) {
+                HStack(spacing: 12) {
+                    Image(systemName: "lock.shield.fill")
+                        .font(.system(size: 28, weight: .semibold))
+                        .foregroundStyle(state.accent.value)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Grant Full Disk Access").font(.system(size: 17, weight: .bold))
+                        Text("BloatMac needs it to scan caches, mail, browser history, and other system-protected locations.")
+                            .font(.system(size: 12)).foregroundStyle(Tokens.text3)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    StepRow(num: 1, text: "Click **Open System Settings** below.")
+                    StepRow(num: 2, text: "Find **BloatMac** in the list and toggle it on.")
+                    StepRow(num: 3, text: "Return here — the gate will close automatically.")
+                }
+                .font(.system(size: 12)).foregroundStyle(Tokens.text2)
+
+                HStack(spacing: 10) {
+                    Btn(label: "Open System Settings", icon: "gearshape", style: .primary) {
+                        NSWorkspace.shared.open(fdaURL)
+                    }
+                    Btn(label: "Re-check now", icon: "arrow.clockwise", style: .ghost) {
+                        state.refreshPermissions()
+                    }
+                    Spacer()
+                    Button("Skip for now") { state.dismissPermissionsGate() }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(Tokens.text3)
+                }
+            }
+            .padding(22)
+            .frame(width: 480)
+            .background(Tokens.bgPanel)
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Tokens.border))
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .shadow(color: .black.opacity(0.4), radius: 32, y: 12)
+        }
+    }
+}
+
+private struct StepRow: View {
+    let num: Int
+    let text: String
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Text("\(num)")
+                .font(.system(size: 11, weight: .bold))
+                .frame(width: 18, height: 18)
+                .background(Circle().fill(Tokens.bgPanel2))
+                .overlay(Circle().stroke(Tokens.border))
+            Text(.init(text))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
 struct Onboarding: View {
     @EnvironmentObject var state: AppState
     @State private var progress: Double = 0

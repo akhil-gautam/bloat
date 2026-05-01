@@ -10,12 +10,14 @@ struct ContentView: View {
             if state.notifOpen { NotifPanel().transition(.opacity) }
             if state.widgetOpen && state.menubarWidgetEnabled { MenuBarWidgetPopover().transition(.opacity) }
             if state.onboardingActive { Onboarding().transition(.opacity) }
+            if state.needsFDA { PermissionsGate().transition(.opacity) }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black.ignoresSafeArea())
         .tint(state.accent.value)
         .animation(.easeOut(duration: 0.2), value: state.notifOpen)
         .animation(.easeOut(duration: 0.2), value: state.widgetOpen)
+        .animation(.easeOut(duration: 0.2), value: state.needsFDA)
     }
 }
 

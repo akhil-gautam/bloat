@@ -31,6 +31,7 @@ final class AppState: ObservableObject {
     @Published var notifOpen = false
     @Published var widgetOpen = false
     @Published var onboardingActive = false
+    @Published var needsFDA = false
     @Published var searchQuery: String = ""
     @Published var searchFocusToken: Int = 0   // bumped to nudge focus
 
@@ -38,6 +39,9 @@ final class AppState: ObservableObject {
     @AppStorage("accent") var accentRaw: String = "blue"
     @AppStorage("menubarWidgetEnabled") var menubarWidgetEnabled: Bool = true
     @AppStorage("hasOnboarded") var hasOnboarded: Bool = false
+    // Set true when the user dismisses the permissions gate; gate stays hidden
+    // until they explicitly re-open it from Settings, even if FDA is still off.
+    @AppStorage("permissionsDismissed") var permissionsDismissed: Bool = false
 
     var accent: AccentKey {
         get { AccentKey(rawValue: accentRaw) ?? .blue }
@@ -47,6 +51,56 @@ final class AppState: ObservableObject {
 
     init() {
         if !hasOnboarded { onboardingActive = true }
+        refreshPermissions()
+    }
+
+    /// Re-probe Full Disk Access. Cheap (a few directory enumerations); call on
+    /// scenePhase .active to pick up grants made in System Settings.
+    func refreshPermissions() {
+        let granted = Self.hasFullDiskAccess()
+        needsFDA = !granted && !permissionsDismissed
+        // If the user has now granted access, clear the dismissed flag so the
+        // gate would re-appear cleanly if they ever revoke it.
+        if granted { permissionsDismissed = false }
+    }
+
+    func dismissPermissionsGate() {
+        permissionsDismissed = true
+        needsFDA = false
+    }
+
+    func reopenPermissionsGate() {
+        permissionsDismissed = false
+        refreshPermissions()
+    }
+
+    /// Probe well-known TCC-protected user directories to infer whether the
+    /// running app has Full Disk Access. We try several paths: if any exist
+    /// and we can list them (or fail with a permission error), we have a
+    /// definitive answer. If none exist (fresh machine), assume granted to
+    /// avoid pestering the user.
+    private static func hasFullDiskAccess() -> Bool {
+        let home = NSHomeDirectory() as NSString
+        let probes = [
+            home.appendingPathComponent("Library/Mail"),
+            home.appendingPathComponent("Library/Safari"),
+            home.appendingPathComponent("Library/Messages"),
+            home.appendingPathComponent("Library/Suggestions"),
+        ]
+        let fm = FileManager.default
+        for path in probes {
+            do {
+                let entries = try fm.contentsOfDirectory(atPath: path)
+                if !entries.isEmpty { return true }
+                // Empty but readable — keep probing in case another path is populated.
+            } catch let err as NSError where err.domain == NSCocoaErrorDomain
+                && (err.code == NSFileReadNoSuchFileError || err.code == NSFileNoSuchFileError) {
+                continue   // path doesn't exist on this machine
+            } catch {
+                return false   // permission denied — FDA missing
+            }
+        }
+        return true   // inconclusive — assume granted
     }
 
     func goto(_ s: Screen) {
