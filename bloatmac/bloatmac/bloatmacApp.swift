@@ -18,8 +18,20 @@ struct bloatmacApp: App {
             ContentView()
                 .environmentObject(state)
                 .frame(minWidth: 1240, idealWidth: 1480, minHeight: 800, idealHeight: 920)
-                .onAppear { applyAppearance(state.themeRaw) }
+                .onAppear {
+                    applyAppearance(state.themeRaw)
+                    if state.menubarWidgetEnabled {
+                        StatusItemController.shared.start(state: state)
+                    }
+                }
                 .onChange(of: state.themeRaw) { _, new in applyAppearance(new) }
+                .onChange(of: state.menubarWidgetEnabled) { _, enabled in
+                    if enabled {
+                        StatusItemController.shared.start(state: state)
+                    } else {
+                        StatusItemController.shared.stop()
+                    }
+                }
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentMinSize)
