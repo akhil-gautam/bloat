@@ -15,6 +15,8 @@ jobs:
     env:
       TAG_NAME: ${{ github.ref_name }}
       DERIVED_DATA: ${{ github.workspace }}/derived
+      APPLE_TEAM_ID: 7KNZMS52WD
+      DEVELOPER_ID_APPLICATION: "Developer ID Application: Akhil Gautam (7KNZMS52WD)"
     defaults:
       run:
         working-directory: bloatmac
@@ -23,13 +25,12 @@ jobs:
 
       - name: Select Xcode
         run: |
-          # Pick the highest Xcode 16.x or 26.x available (BloatMac requires the macOS 26 SDK
-          # for Foundation Models). Falls back to whichever Xcode is currently selected.
+          # BloatMac targets the macOS 26 SDK (Foundation Models). The macos-26
+          # runner image ships Xcode 26 by default; this just makes the choice
+          # explicit and surfaces the version in logs.
           set +e
           for path in \
             /Applications/Xcode_26.app \
-            /Applications/Xcode_16.4.app \
-            /Applications/Xcode_16.3.app \
             /Applications/Xcode.app
           do
             if [ -d "$path" ]; then
@@ -42,11 +43,79 @@ jobs:
       - name: Strip BloatMac version from tag
         id: ver
         run: |
-          # bloatmac-v0.1.0 → 0.1.0
+          # bloatmac-v0.2.0 → 0.2.0
           VERSION="${TAG_NAME#bloatmac-v}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Build (Debug-free Release, ad-hoc signed, universal)
+      - name: Detect signing configuration
+        id: signing
+        working-directory: ${{ github.workspace }}
+        env:
+          P12: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+          NOTARY_KEY: ${{ secrets.NOTARY_API_KEY_P8_BASE64 }}
+        run: |
+          if [ -n "$P12" ] && [ -n "$NOTARY_KEY" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "Signing + notarization configured — will produce a Developer-ID-signed, notarized build."
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::APPLE_CERT_P12_BASE64 / NOTARY_API_KEY_P8_BASE64 secrets missing — falling back to ad-hoc signing."
+          fi
+
+      - name: Import Developer ID certificate
+        if: steps.signing.outputs.configured == 'true'
+        env:
+          P12_BASE64:   ${{ secrets.APPLE_CERT_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.APPLE_CERT_P12_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/build.keychain"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          # Decode cert without leaking secret to logs.
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+          printf '%s' "$P12_BASE64" | base64 --decode > "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          # Prepend our keychain to the search list so xcodebuild finds the identity.
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          security default-keychain -s "$KEYCHAIN"
+          security import "$CERT_PATH" \
+            -k "$KEYCHAIN" \
+            -P "$P12_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          rm -f "$CERT_PATH"
+          # Confirm the identity is visible to codesign.
+          security find-identity -v -p codesigning "$KEYCHAIN"
+
+      # ─── Build (signed path) ───────────────────────────────────────────────
+      - name: Build — Developer ID signed
+        if: steps.signing.outputs.configured == 'true'
+        run: |
+          xcodebuild \
+            -project bloatmac.xcodeproj \
+            -scheme bloatmac \
+            -configuration Release \
+            -destination "generic/platform=macOS" \
+            -derivedDataPath "$DERIVED_DATA" \
+            ONLY_ACTIVE_ARCH=NO \
+            ARCHS="arm64 x86_64" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="$DEVELOPER_ID_APPLICATION" \
+            CODE_SIGNING_REQUIRED=YES \
+            CODE_SIGNING_ALLOWED=YES \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            PROVISIONING_PROFILE_SPECIFIER= \
+            OTHER_CODE_SIGN_FLAGS="--timestamp --options=runtime" \
+            MARKETING_VERSION="${{ steps.ver.outputs.version }}" \
+            CURRENT_PROJECT_VERSION="${{ steps.ver.outputs.version }}" \
+            build
+
+      # ─── Build (ad-hoc fallback) ───────────────────────────────────────────
+      - name: Build — ad-hoc fallback
+        if: steps.signing.outputs.configured == 'false'
         run: |
           xcodebuild \
             -project bloatmac.xcodeproj \
@@ -80,14 +149,26 @@ jobs:
           cp -R "$APP" "$STAGED"
           echo "app=$STAGED" >> "$GITHUB_OUTPUT"
 
-      - name: Strip extended attributes & quarantine bits
+      # ─── Ad-hoc only post-processing ───────────────────────────────────────
+      - name: Strip xattrs & re-sign ad-hoc
+        if: steps.signing.outputs.configured == 'false'
         run: |
           xattr -cr "${{ steps.appPath.outputs.app }}"
-
-      - name: Re-sign with ad-hoc signature so Gatekeeper allows launch after un-quarantine
-        run: |
           codesign --force --deep --sign - "${{ steps.appPath.outputs.app }}"
           codesign --verify --deep --strict --verbose=2 "${{ steps.appPath.outputs.app }}" || true
+
+      # ─── Verify Developer ID signature ─────────────────────────────────────
+      - name: Verify Developer ID signature
+        if: steps.signing.outputs.configured == 'true'
+        run: |
+          codesign --verify --deep --strict --verbose=2 "${{ steps.appPath.outputs.app }}"
+          codesign --display --verbose=4 "${{ steps.appPath.outputs.app }}" 2>&1 | grep -E "Authority|TeamIdentifier|Identifier|Signed Time" || true
+          # Fail loudly if the runtime hardening flag wasn't applied — Apple
+          # rejects notarization without it.
+          if ! codesign --display --verbose=2 "${{ steps.appPath.outputs.app }}" 2>&1 | grep -q "flags=.*runtime"; then
+            echo "::error::App was signed without the hardened runtime — notarization will fail."
+            exit 1
+          fi
 
       - name: Package zip
         run: |
@@ -97,11 +178,44 @@ jobs:
           mv "$ZIP" "$GITHUB_WORKSPACE/$ZIP"
           echo "ZIP=$ZIP" >> "$GITHUB_ENV"
 
+      # ─── Notarize (signed path only) ───────────────────────────────────────
+      - name: Notarize via notarytool
+        if: steps.signing.outputs.configured == 'true'
+        env:
+          NOTARY_API_KEY_P8_BASE64: ${{ secrets.NOTARY_API_KEY_P8_BASE64 }}
+          NOTARY_API_KEY_ID:        ${{ secrets.NOTARY_API_KEY_ID }}
+          NOTARY_API_ISSUER_ID:     ${{ secrets.NOTARY_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          KEY_PATH="$RUNNER_TEMP/notary_key.p8"
+          umask 077
+          printf '%s' "$NOTARY_API_KEY_P8_BASE64" | base64 --decode > "$KEY_PATH"
+          # Submit and wait. notarytool exits non-zero on rejection so this
+          # gates the rest of the pipeline.
+          xcrun notarytool submit "$GITHUB_WORKSPACE/$ZIP" \
+            --key      "$KEY_PATH" \
+            --key-id   "$NOTARY_API_KEY_ID" \
+            --issuer   "$NOTARY_API_ISSUER_ID" \
+            --wait \
+            --timeout  20m
+          rm -f "$KEY_PATH"
+
+      - name: Staple ticket
+        if: steps.signing.outputs.configured == 'true'
+        run: |
+          # Staple to the .app, then re-zip so the zip carries the staple too.
+          xcrun stapler staple "${{ steps.appPath.outputs.app }}"
+          xcrun stapler validate "${{ steps.appPath.outputs.app }}"
+          # Re-zip to embed the stapled ticket in the artifact users download.
+          rm -f "$GITHUB_WORKSPACE/$ZIP"
+          cd "$RUNNER_TEMP"
+          ditto -c -k --keepParent BloatMac.app "$ZIP"
+          mv "$ZIP" "$GITHUB_WORKSPACE/$ZIP"
+
       - name: Package dmg
         run: |
           cd "$RUNNER_TEMP"
           DMG="BloatMac-${TAG_NAME#bloatmac-}-macos.dmg"
-          # Create a staging dir with a symlink to /Applications for drag-to-install UX
           STAGING="$RUNNER_TEMP/dmg-stage"
           rm -rf "$STAGING"; mkdir "$STAGING"
           cp -R BloatMac.app "$STAGING/"
@@ -110,11 +224,83 @@ jobs:
           mv "$DMG" "$GITHUB_WORKSPACE/$DMG"
           echo "DMG=$DMG" >> "$GITHUB_ENV"
 
+      # Notarize + staple the dmg too — Gatekeeper checks per-container.
+      - name: Notarize & staple dmg
+        if: steps.signing.outputs.configured == 'true'
+        env:
+          NOTARY_API_KEY_P8_BASE64: ${{ secrets.NOTARY_API_KEY_P8_BASE64 }}
+          NOTARY_API_KEY_ID:        ${{ secrets.NOTARY_API_KEY_ID }}
+          NOTARY_API_ISSUER_ID:     ${{ secrets.NOTARY_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          KEY_PATH="$RUNNER_TEMP/notary_key.p8"
+          umask 077
+          printf '%s' "$NOTARY_API_KEY_P8_BASE64" | base64 --decode > "$KEY_PATH"
+          xcrun notarytool submit "$GITHUB_WORKSPACE/$DMG" \
+            --key      "$KEY_PATH" \
+            --key-id   "$NOTARY_API_KEY_ID" \
+            --issuer   "$NOTARY_API_ISSUER_ID" \
+            --wait \
+            --timeout  20m
+          rm -f "$KEY_PATH"
+          xcrun stapler staple "$GITHUB_WORKSPACE/$DMG"
+          xcrun stapler validate "$GITHUB_WORKSPACE/$DMG"
+
       - name: Compute SHA256 checksums
         working-directory: ${{ github.workspace }}
         run: |
           shasum -a 256 "$ZIP" "$DMG" > "BloatMac-${TAG_NAME#bloatmac-}-checksums.txt"
           cat "BloatMac-${TAG_NAME#bloatmac-}-checksums.txt"
+
+      - name: Compose release notes
+        id: notes
+        env:
+          SIGNED: ${{ steps.signing.outputs.configured }}
+        run: |
+          if [ "$SIGNED" = "true" ]; then
+            cat > "$RUNNER_TEMP/notes.md" <<'EOF'
+          ## BloatMac ${{ steps.ver.outputs.version }}
+
+          Native SwiftUI macOS companion app for the `bloat` CLI.
+
+          ### Install
+
+          **Homebrew (recommended)**
+          ```sh
+          brew install --cask akhil-gautam/tap/bloatmac
+          ```
+
+          **Manual download**
+          Grab the `.dmg` below, open it, and drag BloatMac.app into Applications.
+
+          ### Notes
+
+          Signed with Developer ID Application and notarized by Apple — first launch should be unblocked.
+          EOF
+          else
+            cat > "$RUNNER_TEMP/notes.md" <<'EOF'
+          ## BloatMac ${{ steps.ver.outputs.version }}
+
+          Native SwiftUI macOS companion app for the `bloat` CLI.
+
+          ### Install
+
+          **Homebrew (recommended)**
+          ```sh
+          brew install --cask akhil-gautam/tap/bloatmac
+          ```
+
+          **Manual download**
+          Grab the `.dmg` below, open it, and drag BloatMac.app into Applications.
+
+          ### Notes
+
+          The app is **ad-hoc signed**, not Developer-ID-signed. On first launch macOS may
+          warn about an unidentified developer — right-click the app → Open, or run
+          `xattr -dr com.apple.quarantine /Applications/BloatMac.app` once.
+          EOF
+          fi
+          echo "path=$RUNNER_TEMP/notes.md" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -122,26 +308,7 @@ jobs:
           tag_name: ${{ env.TAG_NAME }}
           name: BloatMac ${{ steps.ver.outputs.version }}
           generate_release_notes: true
-          body: |
-            ## BloatMac ${{ steps.ver.outputs.version }}
-
-            Native SwiftUI macOS companion app for the `bloat` CLI.
-
-            ### Install
-
-            **Homebrew (recommended)**
-            ```sh
-            brew install --cask akhil-gautam/tap/bloatmac
-            ```
-
-            **Manual download**
-            Grab the `.dmg` below, open it, and drag BloatMac.app into Applications.
-
-            ### Notes
-
-            The app is **ad-hoc signed**, not Developer-ID-signed. On first launch macOS may
-            warn about an unidentified developer — right-click the app → Open, or run
-            `xattr -dr com.apple.quarantine /Applications/BloatMac.app` once.
+          body_path: ${{ steps.notes.outputs.path }}
           files: |
             ${{ github.workspace }}/BloatMac-*-macos.zip
             ${{ github.workspace }}/BloatMac-*-macos.dmg
