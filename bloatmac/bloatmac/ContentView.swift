@@ -43,6 +43,7 @@ struct ScreenRouter: View {
     @EnvironmentObject var state: AppState
     var body: some View {
         switch state.current {
+        case .smartcare:  SmartCareScreen()
         case .dashboard:  DashboardScreen()
         case .storage:    StorageScreen()
         case .large:      LargeFilesScreen()

@@ -20,6 +20,7 @@ var SIDEBAR_NAV: [NavSection] {
     let usedPct = live.totalGB > 0 ? Int((live.usedGB / live.totalGB * 100).rounded()) : 0
     return [
     .init(title: "Overview", items: [
+        .init(id: .smartcare, label: "Smart Care", icon: "sparkles"),
         .init(id: .dashboard, label: "Dashboard", icon: "square.grid.2x2"),
         .init(id: .analytics, label: "Analytics", icon: "chart.bar"),
     ]),

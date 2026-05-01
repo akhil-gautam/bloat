@@ -2,13 +2,14 @@ import SwiftUI
 import Combine
 
 enum Screen: String, CaseIterable, Identifiable {
-    case dashboard, storage, large, duplicates, unused, downloads
+    case smartcare, dashboard, storage, large, duplicates, unused, downloads
     case memory, startup, battery, network
     case analytics, settings
     var id: String { rawValue }
 
     var title: String {
         switch self {
+        case .smartcare:  return "Smart Care"
         case .dashboard:  return "Dashboard"
         case .storage:    return "Storage"
         case .large:      return "Large Files"
