@@ -44,10 +44,11 @@ var SIDEBAR_NAV: [NavSection] {
         .init(id: .cloud,       label: "Cloud",              icon: "icloud"),
     ]),
     .init(title: "System", items: [
-        .init(id: .memory,  label: "Memory",        icon: "memorychip"),
-        .init(id: .startup, label: "Startup items", icon: "powerplug"),
-        .init(id: .battery, label: "Battery",       icon: "battery.100"),
-        .init(id: .network, label: "Network",       icon: "network"),
+        .init(id: .memory,      label: "Memory",        icon: "memorychip"),
+        .init(id: .startup,     label: "Startup items", icon: "powerplug"),
+        .init(id: .battery,     label: "Battery",       icon: "battery.100"),
+        .init(id: .network,     label: "Network",       icon: "network"),
+        .init(id: .maintenance, label: "Maintenance",   icon: "wrench.and.screwdriver"),
     ]),
     .init(title: "", items: [
         .init(id: .settings, label: "Settings", icon: "gearshape"),
