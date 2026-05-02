@@ -50,6 +50,7 @@ var SIDEBAR_NAV: [NavSection] {
         .init(id: .network,     label: "Network",       icon: "network"),
         .init(id: .maintenance, label: "Maintenance",   icon: "wrench.and.screwdriver"),
         .init(id: .schedules,   label: "Schedules",     icon: "calendar.badge.clock"),
+        .init(id: .diskHealth,  label: "Disk health",   icon: "stethoscope"),
     ]),
     .init(title: "", items: [
         .init(id: .settings, label: "Settings", icon: "gearshape"),
