@@ -4,7 +4,7 @@ import Combine
 enum Screen: String, CaseIterable, Identifiable {
     case smartcare, dashboard, storage, large, duplicates, unused, downloads
     case uninstaller, updater, systemjunk, privacy, cloud, maintenance
-    case memory, startup, battery, network, schedules, diskHealth
+    case memory, startup, battery, network, schedules, diskHealth, permissionsAudit
     case analytics, settings
     var id: String { rawValue }
 
@@ -25,6 +25,7 @@ enum Screen: String, CaseIterable, Identifiable {
         case .maintenance:return "Maintenance"
         case .schedules:  return "Schedules"
         case .diskHealth: return "Disk Health"
+        case .permissionsAudit: return "Permissions"
         case .memory:     return "Memory"
         case .startup:    return "Startup Items"
         case .battery:    return "Battery & Energy"

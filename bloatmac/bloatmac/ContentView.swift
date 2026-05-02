@@ -62,6 +62,7 @@ struct ScreenRouter: View {
         case .network:    NetworkScreen()
         case .schedules:  SchedulesScreen()
         case .diskHealth: DiskHealthScreen()
+        case .permissionsAudit: PermissionsAuditScreen()
         case .analytics:  AnalyticsScreen()
         case .settings:   SettingsScreen()
         }
