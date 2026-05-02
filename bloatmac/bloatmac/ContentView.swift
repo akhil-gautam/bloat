@@ -53,6 +53,7 @@ struct ScreenRouter: View {
         case .uninstaller:UninstallerScreen()
         case .updater:    UpdaterScreen()
         case .systemjunk: SystemJunkScreen()
+        case .privacy:    PrivacyScreen()
         case .memory:     MemoryScreen()
         case .startup:    StartupScreen()
         case .battery:    BatteryScreen()
