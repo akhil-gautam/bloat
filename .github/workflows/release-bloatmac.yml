@@ -190,15 +190,38 @@ jobs:
           KEY_PATH="$RUNNER_TEMP/notary_key.p8"
           umask 077
           printf '%s' "$NOTARY_API_KEY_P8_BASE64" | base64 --decode > "$KEY_PATH"
-          # Submit and wait. notarytool exits non-zero on rejection so this
-          # gates the rest of the pipeline.
+          # Submit, capturing the submission id so we can fetch the log
+          # whether or not the submission succeeds.
+          SUBMIT_OUT="$RUNNER_TEMP/notary_submit.txt"
+          set +e
           xcrun notarytool submit "$GITHUB_WORKSPACE/$ZIP" \
             --key      "$KEY_PATH" \
             --key-id   "$NOTARY_API_KEY_ID" \
             --issuer   "$NOTARY_API_ISSUER_ID" \
             --wait \
-            --timeout  20m
+            --timeout  20m \
+            --output-format json | tee "$SUBMIT_OUT"
+          NOTARY_RC=$?
+          set -e
+          SUBMIT_ID="$(python3 -c "import json,sys;print(json.load(open('$SUBMIT_OUT'))['id'])" 2>/dev/null || echo '')"
+          STATUS="$(python3 -c "import json,sys;print(json.load(open('$SUBMIT_OUT'))['status'])" 2>/dev/null || echo '')"
+          echo "Submission id: $SUBMIT_ID"
+          echo "Status:        $STATUS"
+          # Always fetch the developer log — even on Accepted, it sometimes
+          # surfaces warnings worth reading.
+          if [ -n "$SUBMIT_ID" ]; then
+            echo "─── notarytool log ───"
+            xcrun notarytool log "$SUBMIT_ID" \
+              --key    "$KEY_PATH" \
+              --key-id "$NOTARY_API_KEY_ID" \
+              --issuer "$NOTARY_API_ISSUER_ID" || true
+            echo "─── end notarytool log ───"
+          fi
           rm -f "$KEY_PATH"
+          if [ "$STATUS" != "Accepted" ]; then
+            echo "::error::Notarization status was '$STATUS' (rc=$NOTARY_RC) — see log above"
+            exit 1
+          fi
 
       - name: Staple ticket
         if: steps.signing.outputs.configured == 'true'
