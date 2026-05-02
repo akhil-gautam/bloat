@@ -106,6 +106,7 @@ jobs:
             CODE_SIGN_IDENTITY="$DEVELOPER_ID_APPLICATION" \
             CODE_SIGNING_REQUIRED=YES \
             CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
             PROVISIONING_PROFILE_SPECIFIER= \
             OTHER_CODE_SIGN_FLAGS="--timestamp --options=runtime" \
