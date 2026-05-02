@@ -4767,11 +4767,18 @@ struct AnalyticsScreen: View {
 
     static func moduleColor(_ m: CleanupModule) -> Color {
         switch m {
-        case .duplicates: return Tokens.danger
-        case .largeFiles: return Tokens.warn
-        case .unused:     return Tokens.indigo
-        case .downloads:  return Tokens.catApps
-        case .caches:     return Tokens.good
+        case .duplicates:  return Tokens.danger
+        case .largeFiles:  return Tokens.warn
+        case .unused:      return Tokens.indigo
+        case .downloads:   return Tokens.catApps
+        case .caches:      return Tokens.good
+        case .uninstaller: return Tokens.danger
+        case .updater:     return Tokens.indigo
+        case .systemJunk:  return Tokens.warn
+        case .privacy:     return Tokens.indigo
+        case .cloud:       return Tokens.good
+        case .maintenance: return Tokens.good
+        case .malware:     return Tokens.danger
         }
     }
 

@@ -35,6 +35,7 @@ var SIDEBAR_NAV: [NavSection] {
               badge: LiveUnused.shared.totalCount == 0 ? nil : "\(LiveUnused.shared.totalCount)"),
         .init(id: .downloads,  label: "Downloads & cache",  icon: "arrow.down.circle",
               badge: LiveDownloadsCache.shared.totalCount == 0 ? nil : "\(LiveDownloadsCache.shared.totalCount)"),
+        .init(id: .uninstaller, label: "Uninstaller",       icon: "trash"),
     ]),
     .init(title: "System", items: [
         .init(id: .memory,  label: "Memory",        icon: "memorychip"),

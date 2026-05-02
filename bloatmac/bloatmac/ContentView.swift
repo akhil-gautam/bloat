@@ -50,6 +50,7 @@ struct ScreenRouter: View {
         case .duplicates: DuplicatesScreen()
         case .unused:     UnusedScreen()
         case .downloads:  DownloadsCacheScreen()
+        case .uninstaller:UninstallerScreen()
         case .memory:     MemoryScreen()
         case .startup:    StartupScreen()
         case .battery:    BatteryScreen()

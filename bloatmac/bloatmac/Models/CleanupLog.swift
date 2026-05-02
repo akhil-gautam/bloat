@@ -1,14 +1,23 @@
 import Foundation
 import SQLite3
 
-enum CleanupModule: String { case duplicates, largeFiles, unused, downloads, caches
+enum CleanupModule: String {
+    case duplicates, largeFiles, unused, downloads, caches
+    case uninstaller, updater, systemJunk, privacy, cloud, maintenance, malware
     var label: String {
         switch self {
-        case .duplicates: "Duplicates"
-        case .largeFiles: "Large files"
-        case .unused:     "Unused & old"
-        case .downloads:  "Downloads"
-        case .caches:     "Caches"
+        case .duplicates:  "Duplicates"
+        case .largeFiles:  "Large files"
+        case .unused:      "Unused & old"
+        case .downloads:   "Downloads"
+        case .caches:      "Caches"
+        case .uninstaller: "Uninstaller"
+        case .updater:     "Updater"
+        case .systemJunk:  "System junk"
+        case .privacy:     "Privacy"
+        case .cloud:       "Cloud"
+        case .maintenance: "Maintenance"
+        case .malware:     "Malware"
         }
     }
 }
