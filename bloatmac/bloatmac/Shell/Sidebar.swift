@@ -39,6 +39,7 @@ var SIDEBAR_NAV: [NavSection] {
         .init(id: .updater,     label: "Updater",            icon: "arrow.up.circle",
               badge: LiveUpdater.shared.totalCount == 0 ? nil : "\(LiveUpdater.shared.totalCount)",
               badgeKind: .warn),
+        .init(id: .systemjunk,  label: "System junk",        icon: "tray.full"),
     ]),
     .init(title: "System", items: [
         .init(id: .memory,  label: "Memory",        icon: "memorychip"),
