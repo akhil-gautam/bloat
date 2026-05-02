@@ -41,6 +41,7 @@ var SIDEBAR_NAV: [NavSection] {
               badgeKind: .warn),
         .init(id: .systemjunk,  label: "System junk",        icon: "tray.full"),
         .init(id: .privacy,     label: "Privacy",            icon: "lock.shield"),
+        .init(id: .cloud,       label: "Cloud",              icon: "icloud"),
     ]),
     .init(title: "System", items: [
         .init(id: .memory,  label: "Memory",        icon: "memorychip"),

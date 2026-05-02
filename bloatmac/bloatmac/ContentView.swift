@@ -54,6 +54,7 @@ struct ScreenRouter: View {
         case .updater:    UpdaterScreen()
         case .systemjunk: SystemJunkScreen()
         case .privacy:    PrivacyScreen()
+        case .cloud:      CloudScreen()
         case .memory:     MemoryScreen()
         case .startup:    StartupScreen()
         case .battery:    BatteryScreen()
