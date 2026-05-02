@@ -203,9 +203,25 @@ jobs:
       - name: Staple ticket
         if: steps.signing.outputs.configured == 'true'
         run: |
-          # Staple to the .app, then re-zip so the zip carries the staple too.
-          xcrun stapler staple "${{ steps.appPath.outputs.app }}"
-          xcrun stapler validate "${{ steps.appPath.outputs.app }}"
+          # `notarytool submit --wait` returns when Apple has accepted the
+          # submission, but the ticket store (CloudKit-backed) sometimes
+          # takes a minute longer to propagate the ticket to the staple
+          # endpoint. Retry with backoff before giving up.
+          set -e
+          APP="${{ steps.appPath.outputs.app }}"
+          for attempt in 1 2 3 4 5 6; do
+            if xcrun stapler staple "$APP"; then
+              echo "Stapled on attempt $attempt"
+              break
+            fi
+            if [ "$attempt" = "6" ]; then
+              echo "::error::stapler still failing after 6 attempts — Apple edge hasn't propagated the ticket"
+              exit 1
+            fi
+            echo "Stapler edge not ready (attempt $attempt) — sleeping 30s"
+            sleep 30
+          done
+          xcrun stapler validate "$APP"
           # Re-zip to embed the stapled ticket in the artifact users download.
           rm -f "$GITHUB_WORKSPACE/$ZIP"
           cd "$RUNNER_TEMP"
@@ -243,7 +259,18 @@ jobs:
             --wait \
             --timeout  20m
           rm -f "$KEY_PATH"
-          xcrun stapler staple "$GITHUB_WORKSPACE/$DMG"
+          for attempt in 1 2 3 4 5 6; do
+            if xcrun stapler staple "$GITHUB_WORKSPACE/$DMG"; then
+              echo "DMG stapled on attempt $attempt"
+              break
+            fi
+            if [ "$attempt" = "6" ]; then
+              echo "::error::DMG stapler still failing after 6 attempts"
+              exit 1
+            fi
+            echo "DMG stapler edge not ready (attempt $attempt) — sleeping 30s"
+            sleep 30
+          done
           xcrun stapler validate "$GITHUB_WORKSPACE/$DMG"
 
       - name: Compute SHA256 checksums
