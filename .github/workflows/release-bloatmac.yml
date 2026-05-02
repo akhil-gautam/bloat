@@ -15,8 +15,8 @@ jobs:
     env:
       TAG_NAME: ${{ github.ref_name }}
       DERIVED_DATA: ${{ github.workspace }}/derived
-      APPLE_TEAM_ID: 7KNZMS52WD
-      DEVELOPER_ID_APPLICATION: "Developer ID Application: Akhil Gautam (7KNZMS52WD)"
+      APPLE_TEAM_ID: NCLSWS8Y8K
+      DEVELOPER_ID_APPLICATION: "Developer ID Application: Akhil Gautam (NCLSWS8Y8K)"
     defaults:
       run:
         working-directory: bloatmac
