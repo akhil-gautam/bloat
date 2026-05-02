@@ -49,6 +49,7 @@ var SIDEBAR_NAV: [NavSection] {
         .init(id: .battery,     label: "Battery",       icon: "battery.100"),
         .init(id: .network,     label: "Network",       icon: "network"),
         .init(id: .maintenance, label: "Maintenance",   icon: "wrench.and.screwdriver"),
+        .init(id: .schedules,   label: "Schedules",     icon: "calendar.badge.clock"),
     ]),
     .init(title: "", items: [
         .init(id: .settings, label: "Settings", icon: "gearshape"),

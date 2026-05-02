@@ -60,6 +60,7 @@ struct ScreenRouter: View {
         case .startup:    StartupScreen()
         case .battery:    BatteryScreen()
         case .network:    NetworkScreen()
+        case .schedules:  SchedulesScreen()
         case .analytics:  AnalyticsScreen()
         case .settings:   SettingsScreen()
         }
