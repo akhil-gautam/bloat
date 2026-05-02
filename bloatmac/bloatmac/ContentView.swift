@@ -51,6 +51,7 @@ struct ScreenRouter: View {
         case .unused:     UnusedScreen()
         case .downloads:  DownloadsCacheScreen()
         case .uninstaller:UninstallerScreen()
+        case .updater:    UpdaterScreen()
         case .memory:     MemoryScreen()
         case .startup:    StartupScreen()
         case .battery:    BatteryScreen()
