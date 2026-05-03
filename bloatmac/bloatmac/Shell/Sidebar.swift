@@ -52,6 +52,7 @@ var SIDEBAR_NAV: [NavSection] {
         .init(id: .schedules,   label: "Schedules",     icon: "calendar.badge.clock"),
         .init(id: .diskHealth,       label: "Disk health",  icon: "stethoscope"),
         .init(id: .permissionsAudit, label: "Permissions",  icon: "lock.shield"),
+        .init(id: .threatHygiene,    label: "Threat hygiene", icon: "checkmark.shield"),
     ]),
     .init(title: "", items: [
         .init(id: .settings, label: "Settings", icon: "gearshape"),
