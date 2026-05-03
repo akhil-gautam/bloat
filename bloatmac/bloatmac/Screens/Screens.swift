@@ -5038,61 +5038,174 @@ private struct SessionChart: View {
 
 struct SettingsScreen: View {
     @EnvironmentObject var state: AppState
+
     var body: some View {
-        ScreenScroll {
-            settingsCard(title: "Appearance") {
-                VStack(alignment: .leading, spacing: 14) {
-                    HStack {
-                        Text("Theme").font(.system(size: 13, weight: .medium)).frame(width: 160, alignment: .leading)
-                        Picker("", selection: $state.themeRaw) {
-                            Text("Light").tag("light")
-                            Text("Dark").tag("dark")
-                        }.pickerStyle(.segmented).frame(width: 220)
-                    }
-                    HStack {
-                        Text("Accent").font(.system(size: 13, weight: .medium)).frame(width: 160, alignment: .leading)
-                        HStack(spacing: 8) {
-                            ForEach(AccentKey.allCases) { k in
-                                Button { state.accent = k } label: {
-                                    Circle().fill(k.value)
-                                        .frame(width: 22, height: 22)
-                                        .overlay(Circle().stroke(.white, lineWidth: state.accent == k ? 2 : 0))
-                                        .overlay(Circle().stroke(Tokens.border, lineWidth: 1))
-                                }.buttonStyle(.plain)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 28) {
+                title
+                appearanceSection
+                generalSection
+                permissionsSection
+                aboutSection
+            }
+            .padding(.horizontal, 32).padding(.top, 24).padding(.bottom, 40)
+            .frame(maxWidth: 640, alignment: .leading)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Tokens.bgWindow)
+    }
+
+    // MARK: Title
+
+    private var title: some View {
+        Text("Settings").font(.system(size: 24, weight: .bold))
+    }
+
+    // MARK: Appearance
+
+    private var appearanceSection: some View {
+        section("Appearance") {
+            settingsRow(label: "Theme") {
+                Picker("", selection: $state.themeRaw) {
+                    Text("Light").tag("light")
+                    Text("Dark").tag("dark")
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 180)
+            }
+            divider
+            settingsRow(label: "Accent color") {
+                HStack(spacing: 10) {
+                    ForEach(AccentKey.allCases) { k in
+                        Button { state.accent = k } label: {
+                            ZStack {
+                                Circle().fill(k.value).frame(width: 20, height: 20)
+                                if state.accent == k {
+                                    Image(systemName: "checkmark")
+                                        .font(.system(size: 9, weight: .heavy))
+                                        .foregroundStyle(.white)
+                                }
                             }
                         }
+                        .buttonStyle(.plain)
+                        .help(k.rawValue.capitalized)
                     }
-                }
-            }
-            settingsCard(title: "Modes") {
-                VStack(spacing: 12) {
-                    HStack {
-                        Text("Menu bar widget").font(.system(size: 13, weight: .medium)).frame(maxWidth: .infinity, alignment: .leading)
-                        AppSwitch(on: $state.menubarWidgetEnabled)
-                    }
-                    HStack {
-                        Text("Replay first scan").font(.system(size: 13, weight: .medium)).frame(maxWidth: .infinity, alignment: .leading)
-                        Btn(label: "Replay", style: .secondary) { state.replayOnboarding() }
-                    }
-                }
-            }
-            settingsCard(title: "About") {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("BloatMac").font(.system(size: 14, weight: .bold))
-                    Text("v 2.4.1 — design preview").font(.system(size: 11.5)).foregroundStyle(Tokens.text3)
                 }
             }
         }
     }
 
-    @ViewBuilder
-    private func settingsCard<C: View>(title: String, @ViewBuilder _ content: () -> C) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(title).font(.system(size: 14, weight: .bold))
-            content()
+    // MARK: General
+
+    private var generalSection: some View {
+        section("General") {
+            settingsRow(label: "Menu bar widget",
+                        sublabel: "Quick storage / RAM / network in your menu bar.") {
+                Toggle("", isOn: $state.menubarWidgetEnabled)
+                    .labelsHidden().toggleStyle(.switch)
+            }
+            divider
+            settingsRow(label: "Onboarding",
+                        sublabel: "Replay the welcome scan animation.") {
+                Button("Replay") { state.replayOnboarding() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+            }
         }
-        .padding(18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .metallic(radius: Tokens.Radius.lg)
+    }
+
+    // MARK: Permissions
+
+    private var permissionsSection: some View {
+        section("Permissions") {
+            settingsRow(label: "Full Disk Access",
+                        sublabel: state.needsFDA
+                            ? "Not granted — some scans run with reduced detail."
+                            : "Granted. BloatMac can read protected user dirs.") {
+                HStack(spacing: 8) {
+                    Button("Re-check") { state.refreshPermissions() }
+                        .buttonStyle(.bordered).controlSize(.small)
+                    Button("Open settings") {
+                        state.reopenPermissionsGate()
+                    }
+                    .buttonStyle(.borderedProminent).controlSize(.small)
+                }
+            }
+        }
+    }
+
+    // MARK: About
+
+    private var aboutSection: some View {
+        section("About") {
+            HStack(alignment: .center, spacing: 14) {
+                BrandMark(size: 44)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("BloatMac").font(.system(size: 16, weight: .bold))
+                    Text(appVersionLabel + buildSuffix)
+                        .font(.system(size: 11.5)).foregroundStyle(Tokens.text3)
+                        .monospacedDigit()
+                }
+                Spacer()
+                Link(destination: URL(string: "https://github.com/akhil-gautam/bloat")!) {
+                    HStack(spacing: 4) {
+                        Text("View on GitHub")
+                        Image(systemName: "arrow.up.right.square")
+                    }
+                    .font(.system(size: 11.5, weight: .medium))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(state.accent.value)
+            }
+            .padding(.horizontal, 16).padding(.vertical, 14)
+        }
+    }
+
+    private var buildSuffix: String {
+        // CFBundleVersion sometimes mirrors the marketing version; only show
+        // it when it adds information (i.e. it's different).
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? ""
+        let build = info?["CFBundleVersion"] as? String ?? ""
+        return (build.isEmpty || build == short) ? "" : " (\(build))"
+    }
+
+    // MARK: Building blocks
+
+    @ViewBuilder
+    private func section<C: View>(_ title: String, @ViewBuilder _ content: () -> C) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title.uppercased())
+                .font(.system(size: 11, weight: .semibold))
+                .tracking(0.6)
+                .foregroundStyle(Tokens.text3)
+            VStack(spacing: 0) { content() }
+                .background(Tokens.bgPanel)
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Tokens.border))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+        }
+    }
+
+    @ViewBuilder
+    private func settingsRow<C: View>(label: String,
+                                       sublabel: String? = nil,
+                                       @ViewBuilder _ control: () -> C) -> some View {
+        HStack(alignment: .center, spacing: 16) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label).font(.system(size: 13, weight: .regular)).foregroundStyle(Tokens.text)
+                if let sub = sublabel {
+                    Text(sub).font(.system(size: 11)).foregroundStyle(Tokens.text3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer()
+            control()
+        }
+        .padding(.horizontal, 16).padding(.vertical, 12)
+    }
+
+    private var divider: some View {
+        Divider().padding(.leading, 16).opacity(0.6)
     }
 }
