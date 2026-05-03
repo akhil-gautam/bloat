@@ -20,14 +20,6 @@ cask "bloatmac" do
 
   app "BloatMac.app"
 
-  # The release is ad-hoc signed (not Developer-ID notarized). Strip quarantine
-  # so Gatekeeper allows launch after install.
-  postflight do
-    system_command "/usr/bin/xattr",
-                   args: ["-dr", "com.apple.quarantine", "#{appdir}/BloatMac.app"],
-                   sudo: false
-  end
-
   zap trash: [
     "~/Library/Application Support/BloatMac",
     "~/Library/Preferences/akhilgautam123.bloatmac.plist",
