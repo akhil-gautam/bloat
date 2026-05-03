@@ -37,29 +37,9 @@ Native SwiftUI cleanup + maintenance app. **19 screens.** CleanMyMac-class featu
 
 ![Dashboard](bloatmac/screenshots/dashboard.png)
 
-**Smart Care**
-
-![Smart Care](bloatmac/screenshots/smart-care.png)
-
-**Analytics**
-
-![Analytics](bloatmac/screenshots/analytics.png)
-
-**Duplicates**
-
-![Duplicates](bloatmac/screenshots/duplicates.png)
-
-**Memory**
-
-![Memory](bloatmac/screenshots/memory.png)
-
 **Network**
 
 ![Network](bloatmac/screenshots/network.png)
-
-**Onboarding**
-
-![Onboarding](bloatmac/screenshots/onboarding.png)
 
 ## Install BloatMac
 
