@@ -109,13 +109,14 @@ struct Sidebar: View {
 }
 
 struct BrandMark: View {
+    /// Defaults to the sidebar's 26 pt; callers like `Onboarding` scale via
+    /// `.scaleEffect()` so we don't need a `size` parameter.
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 7).fill(LinearGradient(colors: [Color(hex: 0x0A84FF), Color(hex: 0x5E5CE6)], startPoint: .topLeading, endPoint: .bottomTrailing))
-            Text("B").font(.system(size: 13, weight: .black)).foregroundStyle(.white)
-        }
-        .frame(width: 26, height: 26)
-        .shadow(color: Color(hex: 0x0A84FF).opacity(0.35), radius: 4, x: 0, y: 2)
+        Image("BrandLogo")
+            .resizable()
+            .interpolation(.high)
+            .frame(width: 26, height: 26)
+            .shadow(color: Color(hex: 0x0A84FF).opacity(0.32), radius: 4, x: 0, y: 2)
     }
 }
 
