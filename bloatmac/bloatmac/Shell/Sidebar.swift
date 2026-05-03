@@ -77,7 +77,7 @@ struct Sidebar: View {
                 BrandMark()
                 VStack(alignment: .leading, spacing: 1) {
                     Text("BloatMac").font(.system(size: 14, weight: .bold)).tracking(-0.3).foregroundStyle(Tokens.text)
-                    Text("v 2.4.1").font(.system(size: 10, weight: .medium)).foregroundStyle(Tokens.text3)
+                    Text(appVersionLabel).font(.system(size: 10, weight: .medium)).foregroundStyle(Tokens.text3)
                 }
             }
             .padding(.horizontal, 14).padding(.bottom, 14)
@@ -108,15 +108,135 @@ struct Sidebar: View {
     }
 }
 
+/// Reads the bundle's CFBundleShortVersionString so the sidebar always
+/// reflects the actual build, not a hardcoded prototype string. Falls
+/// back to the build number if the short version key is missing.
+var appVersionLabel: String {
+    let info = Bundle.main.infoDictionary
+    let short = info?["CFBundleShortVersionString"] as? String
+    let build = info?["CFBundleVersion"] as? String
+    return "v " + (short ?? build ?? "?")
+}
+
+/// Native SwiftUI redraw of the brand logo. We rasterise from PNG assets
+/// for the AppIcon (Apple requires `.icns` from PNGs there), but for
+/// in-app surfaces the bitmap import introduces a faint halo at the
+/// rounded-square edges from anti-aliasing. Drawing as live shapes
+/// stays crisp at any scale and ditches the halo entirely.
 struct BrandMark: View {
-    /// Defaults to the sidebar's 26 pt; callers like `Onboarding` scale via
-    /// `.scaleEffect()` so we don't need a `size` parameter.
+    /// Defaults to the sidebar's 26 pt. `Onboarding` scales via
+    /// `.scaleEffect()` so the geometry inside remains pixel-aligned.
+    var size: CGFloat = 26
+
+    private var corner: CGFloat { size * (232.0 / 1024.0) }
+
     var body: some View {
-        Image("BrandLogo")
-            .resizable()
-            .interpolation(.high)
-            .frame(width: 26, height: 26)
-            .shadow(color: Color(hex: 0x0A84FF).opacity(0.32), radius: 4, x: 0, y: 2)
+        ZStack {
+            // Badge gradient — matches Logo.svg's #0A84FF → #5E5CE6 stops.
+            RoundedRectangle(cornerRadius: corner, style: .continuous)
+                .fill(LinearGradient(colors: [Color(hex: 0x0A84FF), Color(hex: 0x5E5CE6)],
+                                     startPoint: .topLeading, endPoint: .bottomTrailing))
+            // Subtle radial highlight near the top-left so the badge has dimension.
+            RoundedRectangle(cornerRadius: corner, style: .continuous)
+                .fill(RadialGradient(colors: [.white.opacity(0.20), .clear],
+                                     center: UnitPoint(x: 0.28, y: 0.22),
+                                     startRadius: 0, endRadius: size * 0.95))
+            // Hairline inner stroke — matches the SVG's white-12% inset rect.
+            RoundedRectangle(cornerRadius: corner - 0.5, style: .continuous)
+                .stroke(.white.opacity(0.12), lineWidth: 1)
+                .padding(0.5)
+            // Stylized "B" — vertical stem + two stacked D-loops, baked
+            // into one path so it fills as one shape. Coords are
+            // normalised against the SVG's 1024-unit canvas, then scaled
+            // to the runtime size.
+            BLetterShape()
+                .fill(LinearGradient(
+                    colors: [.white, Color(hex: 0xF0E9FF)],
+                    startPoint: UnitPoint(x: 0.3, y: 0.05),
+                    endPoint:   UnitPoint(x: 0.6, y: 1.0)
+                ))
+            // Smart-care sparkle — fades out below the sidebar threshold so
+            // it doesn't read as noise at 26 pt.
+            if size >= 36 {
+                SparkleShape()
+                    .fill(.white.opacity(0.94))
+                    .frame(width: size * 0.16, height: size * 0.16)
+                    .offset(x: size * 0.275, y: -size * 0.275)
+            }
+        }
+        .frame(width: size, height: size)
+        .compositingGroup()
+        .shadow(color: Color(hex: 0x0A84FF).opacity(0.32), radius: size * 0.18, x: 0, y: size * 0.08)
+    }
+}
+
+/// Filled "B": vertical stem + two D-loops in a single path. All
+/// coordinates expressed against the SVG's 1024-unit canvas, then
+/// scaled to the runtime rect.
+private struct BLetterShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let scale = rect.width / 1024.0
+        func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: rect.minX + x * scale, y: rect.minY + y * scale)
+        }
+        var path = Path()
+        // Stem: rounded rect 288..394 × 268..756.
+        path.addRoundedRect(
+            in: CGRect(origin: p(288, 268),
+                       size: CGSize(width: 106 * scale, height: 488 * scale)),
+            cornerSize: CGSize(width: 22 * scale, height: 22 * scale)
+        )
+        // Top D-loop: from (390,268) down to (390,504), arc back via right bulge.
+        path.move(to: p(390, 268))
+        path.addLine(to: p(390, 504))
+        path.addArc(
+            tangent1End: p(514, 504),
+            tangent2End: p(514, 268),
+            radius: 124 * scale
+        )
+        path.addArc(
+            tangent1End: p(514, 268),
+            tangent2End: p(390, 268),
+            radius: 124 * scale
+        )
+        path.closeSubpath()
+        // Bottom D-loop: slightly larger per typographic convention.
+        path.move(to: p(390, 520))
+        path.addLine(to: p(390, 756))
+        path.addArc(
+            tangent1End: p(528, 756),
+            tangent2End: p(528, 520),
+            radius: 138 * scale
+        )
+        path.addArc(
+            tangent1End: p(528, 520),
+            tangent2End: p(390, 520),
+            radius: 138 * scale
+        )
+        path.closeSubpath()
+        return path
+    }
+}
+
+/// Four-point sparkle: a vertical bar + horizontal bar (rounded) + a
+/// faint 45°-rotated rounded square between them.
+private struct SparkleShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let cx = rect.midX, cy = rect.midY
+        let arm = rect.width * 0.5
+        let thick = rect.width * 0.16
+        // Vertical bar
+        path.addRoundedRect(
+            in: CGRect(x: cx - thick / 2, y: cy - arm, width: thick, height: arm * 2),
+            cornerSize: CGSize(width: thick / 2, height: thick / 2)
+        )
+        // Horizontal bar
+        path.addRoundedRect(
+            in: CGRect(x: cx - arm, y: cy - thick / 2, width: arm * 2, height: thick),
+            cornerSize: CGSize(width: thick / 2, height: thick / 2)
+        )
+        return path
     }
 }
 
