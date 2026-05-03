@@ -2,6 +2,57 @@
 
 > Your disk is bloated. Let's fix that.
 
+Two ways to clean and monitor your Mac:
+
+1. **BloatMac** — native SwiftUI desktop app. CleanMyMac-class feature surface, no subscription.
+2. **bloat** — htop-style terminal UI. Disk analysis, smart cleanup, live system monitor, plugin system.
+
+Both are real-detection tools — every module reads actual disk / system state, not mocks.
+
+---
+
+# BloatMac (macOS app)
+
+Native SwiftUI cleanup + maintenance app. 19 screens covering Smart Care, Storage, Large files, Duplicates (exact + visually-similar via Vision), Unused & old, Downloads & cache, Uninstaller (with leftover sweep), Updater (Homebrew + MAS + Sparkle), System junk (Xcode / iOS backups / Mail / Photos / Time Machine snapshots), Privacy (browser data wipe), Cloud (iCloud / Drive / Dropbox / OneDrive), Memory, Startup items, Battery, Network, Maintenance, Schedules, Disk health, Permissions audit.
+
+Real `NSStatusItem` menu-bar widget with storage % / memory pressure / network rates and quick-scan.
+
+![BloatMac](bloatmac/exports/bloatmac-wordmark.svg)
+
+## Screenshots
+
+| Dashboard | Smart Care |
+|---|---|
+| ![Dashboard](bloatmac/screenshots/dashboard.png) | ![Smart Care](bloatmac/screenshots/smart-care.png) |
+
+| Analytics | Duplicates |
+|---|---|
+| ![Analytics](bloatmac/screenshots/analytics.png) | ![Duplicates](bloatmac/screenshots/duplicates.png) |
+
+| Memory | Network |
+|---|---|
+| ![Memory](bloatmac/screenshots/memory.png) | ![Network](bloatmac/screenshots/network.png) |
+
+![Onboarding](bloatmac/screenshots/onboarding.png)
+
+## Install BloatMac
+
+```sh
+brew install --cask akhil-gautam/tap/bloatmac
+```
+
+Or grab the `.dmg` from the [releases page](https://github.com/akhil-gautam/bloat/releases) (tags starting with `bloatmac-v…`).
+
+Releases are **Developer ID signed and Apple-notarized** — Gatekeeper opens cleanly, no quarantine workaround.
+
+Requires macOS 26 (Tahoe). The dashboard's AI briefing uses Foundation Models on macOS 26+ and falls back to a deterministic heuristic on older releases.
+
+See [`bloatmac/README.md`](bloatmac/README.md) for the full module list, project layout, and roadmap.
+
+---
+
+# bloat (CLI)
+
 An htop-style terminal UI for macOS that combines **disk storage analysis**, **smart cleanup**, and **real-time system monitoring** in one tool. Scan folders to find what's eating your disk, clean up caches/build artifacts/duplicates with tiered safety, and monitor CPU, memory, network, GPU, and processes — all without leaving the terminal.
 
 ![bloat system monitor](assets/screenshot.png)
