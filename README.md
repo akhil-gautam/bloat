@@ -11,13 +11,25 @@ Both are real-detection tools — every module reads actual disk / system state,
 
 ---
 
-# BloatMac (macOS app)
+<p align="center">
+  <img src="bloatmac/exports/bloatmac-wordmark.svg" width="520" alt="BloatMac" />
+</p>
 
-Native SwiftUI cleanup + maintenance app. 19 screens covering Smart Care, Storage, Large files, Duplicates (exact + visually-similar via Vision), Unused & old, Downloads & cache, Uninstaller (with leftover sweep), Updater (Homebrew + MAS + Sparkle), System junk (Xcode / iOS backups / Mail / Photos / Time Machine snapshots), Privacy (browser data wipe), Cloud (iCloud / Drive / Dropbox / OneDrive), Memory, Startup items, Battery, Network, Maintenance, Schedules, Disk health, Permissions audit.
+# BloatMac — macOS app
 
-Real `NSStatusItem` menu-bar widget with storage % / memory pressure / network rates and quick-scan.
+Native SwiftUI cleanup + maintenance app. **19 screens.** CleanMyMac-class feature surface, no subscription.
 
-![BloatMac](bloatmac/exports/bloatmac-wordmark.svg)
+**Storage**
+- Smart Care · one-click scan + apply
+- Storage treemap · Large files · Duplicates (exact + visually-similar via Vision)
+- Unused & old · Downloads & cache
+- Uninstaller (full leftover sweep) · Updater (Homebrew · MAS · Sparkle)
+- System junk · Privacy · Cloud (iCloud · Drive · Dropbox · OneDrive)
+
+**System**
+- Memory · Startup items · Battery · Network
+- Maintenance · Schedules · Disk health · Permissions audit
+- Real `NSStatusItem` menu-bar widget — storage %, memory pressure, network rates, quick-scan
 
 ## Screenshots
 
