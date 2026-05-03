@@ -33,17 +33,31 @@ Native SwiftUI cleanup + maintenance app. **19 screens.** CleanMyMac-class featu
 
 ## Screenshots
 
-| Dashboard | Smart Care |
-|---|---|
-| ![Dashboard](bloatmac/screenshots/dashboard.png) | ![Smart Care](bloatmac/screenshots/smart-care.png) |
+**Dashboard**
 
-| Analytics | Duplicates |
-|---|---|
-| ![Analytics](bloatmac/screenshots/analytics.png) | ![Duplicates](bloatmac/screenshots/duplicates.png) |
+![Dashboard](bloatmac/screenshots/dashboard.png)
 
-| Memory | Network |
-|---|---|
-| ![Memory](bloatmac/screenshots/memory.png) | ![Network](bloatmac/screenshots/network.png) |
+**Smart Care**
+
+![Smart Care](bloatmac/screenshots/smart-care.png)
+
+**Analytics**
+
+![Analytics](bloatmac/screenshots/analytics.png)
+
+**Duplicates**
+
+![Duplicates](bloatmac/screenshots/duplicates.png)
+
+**Memory**
+
+![Memory](bloatmac/screenshots/memory.png)
+
+**Network**
+
+![Network](bloatmac/screenshots/network.png)
+
+**Onboarding**
 
 ![Onboarding](bloatmac/screenshots/onboarding.png)
 
