@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="badge" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0A84FF"/>
+      <stop offset="1" stop-color="#5E5CE6"/>
+    </linearGradient>
+    <linearGradient id="bMark" x1="0.3" y1="0.05" x2="0.6" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#F0E9FF"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.28" cy="0.22" r="0.95">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.20"/>
+      <stop offset="0.55" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect x="0" y="0" width="1024" height="1024" rx="232" ry="232" fill="url(#badge)"/>
+  <rect x="0" y="0" width="1024" height="1024" rx="232" ry="232" fill="url(#glow)"/>
+  <rect x="4" y="4" width="1016" height="1016" rx="228" ry="228"
+        fill="none" stroke="#FFFFFF" stroke-opacity="0.12" stroke-width="2"/>
+
+  <g fill="url(#bMark)">
+    <rect x="288" y="268" width="106" height="488" rx="22" ry="22"/>
+    <path d="M 390 268 L 390 504 A 124 118 0 0 0 390 268 Z"/>
+    <path d="M 390 520 L 390 756 A 138 118 0 0 0 390 520 Z"/>
+  </g>
+
+  <g transform="translate(792 222)">
+    <rect x="-9"  y="-72" width="18"  height="144" rx="9" fill="#FFFFFF" fill-opacity="0.94"/>
+    <rect x="-72" y="-9"  width="144" height="18"  rx="9" fill="#FFFFFF" fill-opacity="0.94"/>
+    <rect x="-30" y="-30" width="60"  height="60"  rx="14" transform="rotate(45)" fill="#FFFFFF" fill-opacity="0.18"/>
+  </g>
+</svg>
