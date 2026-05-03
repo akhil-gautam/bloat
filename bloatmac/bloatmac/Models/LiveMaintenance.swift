@@ -1,14 +1,16 @@
 import Foundation
 import Combine
+import AppKit
 
 /// Periodic-maintenance launcher. Each `MaintenanceAction` describes one of
 /// the routines CleanmyMac's "Performance" pane runs — DNS flush, RAM purge,
 /// Spotlight reindex, Launch Services rebuild, etc.
 ///
-/// Most of these poke system-owned files and require root. Those rows are
-/// currently disabled and tagged "needs privileged helper" — they'll come
-/// alive when Phase 8.2 lands. The rows that genuinely don't need root
-/// (volume verify, user-domain Launch Services rebuild) run today.
+/// Root-requiring actions escalate via NSAppleScript "with administrator
+/// privileges" — pops a single OS password / TouchID prompt per click and
+/// runs the command as root. No persistent helper needed; the alternative
+/// (a full SMAppService daemon target with XPC) is overkill for four
+/// rarely-run shell commands.
 enum MaintenanceID: String, CaseIterable {
     case flushDNS, purgeRAM, periodic, reindexSpotlight, rebuildLSUser, rebuildLSSystem, verifyVolume, repairPermissions
 }
@@ -30,7 +32,10 @@ final class LiveMaintenance: ObservableObject {
     static let shared = LiveMaintenance()
 
     @Published var actions: [MaintenanceAction]
-    @Published private(set) var helperAvailable: Bool = false   // becomes true when Phase 8.2 ships
+    /// Always true now that root actions escalate via NSAppleScript admin
+    /// rather than waiting on a persistent helper. Kept on the published
+    /// surface for the screen's banner/disabled-state machinery.
+    @Published private(set) var helperAvailable: Bool = true
 
     private init() {
         actions = [
@@ -63,11 +68,6 @@ final class LiveMaintenance: ObservableObject {
 
     func run(_ id: MaintenanceID) {
         guard let idx = actions.firstIndex(where: { $0.id == id }) else { return }
-        if actions[idx].requiresHelper && !helperAvailable {
-            actions[idx].status = .failed
-            actions[idx].output = "Privileged helper not installed. Install BloatMac v1.0 with Developer ID signing to enable."
-            return
-        }
         actions[idx].status = .running
         actions[idx].output = ""
         let action = actions[idx]
@@ -86,9 +86,7 @@ final class LiveMaintenance: ObservableObject {
     }
 
     func runAll() {
-        for action in actions where !action.requiresHelper || helperAvailable {
-            run(action.id)
-        }
+        for action in actions { run(action.id) }
     }
 
     // MARK: - Execution
@@ -105,8 +103,63 @@ final class LiveMaintenance: ObservableObject {
         case .repairPermissions:
             // No-op — surface the educational note and call it a success.
             return (true, "Skipped: macOS handles this automatically since 10.11 El Capitan.")
-        default:
-            return (false, "Privileged helper not installed.")
+
+        // Root-required actions — escalate via AppleScript admin.
+        case .flushDNS:
+            return await runAsAdmin("/usr/bin/dscacheutil -flushcache && /usr/bin/killall -HUP mDNSResponder")
+        case .purgeRAM:
+            return await runAsAdmin("/usr/sbin/purge")
+        case .periodic:
+            return await runAsAdmin("/usr/sbin/periodic daily weekly monthly")
+        case .reindexSpotlight:
+            return await runAsAdmin("/usr/bin/mdutil -E /")
+        case .rebuildLSSystem:
+            let lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+            return await runAsAdmin("\(lsregister) -kill -r -domain local -domain system")
+        }
+    }
+
+    /// Run a shell command as root via AppleScript "with administrator
+    /// privileges". macOS pops its native auth prompt (TouchID or
+    /// password) showing BloatMac as the requester. Returns the combined
+    /// stdout+stderr; success is determined by AppleScript not setting an
+    /// error.
+    @MainActor
+    private static func runAsAdmin(_ shellCommand: String) async -> (Bool, String) {
+        // AppleScript escaping: backslashes and double-quotes need to be
+        // escaped inside the `do shell script` argument.
+        let escaped = shellCommand
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        let source = """
+        do shell script "\(escaped) 2>&1" with administrator privileges
+        """
+        return await withCheckedContinuation { continuation in
+            // NSAppleScript's executeAndReturnError isn't async, but it's
+            // synchronous on the calling thread — wrap in a Task so we
+            // don't block the caller.
+            Task.detached {
+                guard let script = NSAppleScript(source: source) else {
+                    continuation.resume(returning: (false, "Couldn't compile AppleScript"))
+                    return
+                }
+                var error: NSDictionary?
+                let descriptor = script.executeAndReturnError(&error)
+                if let error {
+                    let code = (error[NSAppleScript.errorNumber] as? Int) ?? -1
+                    let msg  = (error[NSAppleScript.errorMessage] as? String) ?? "Unknown AppleScript error"
+                    // Code -128 is user-cancelled the auth prompt — treat as a
+                    // soft failure with a friendlier message.
+                    if code == -128 {
+                        continuation.resume(returning: (false, "Cancelled — admin password not entered."))
+                    } else {
+                        continuation.resume(returning: (false, "AppleScript error \(code): \(msg)"))
+                    }
+                    return
+                }
+                let output = descriptor.stringValue ?? ""
+                continuation.resume(returning: (true, output))
+            }
         }
     }
 

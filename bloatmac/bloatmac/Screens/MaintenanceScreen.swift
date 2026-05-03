@@ -8,7 +8,7 @@ struct MaintenanceScreen: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider()
-            if !m.helperAvailable { helperBanner }
+            helperBanner
             ScrollView {
                 LazyVStack(spacing: 10) {
                     ForEach(m.actions) { action in
@@ -37,22 +37,22 @@ struct MaintenanceScreen: View {
 
     private var helperBanner: some View {
         HStack(spacing: 10) {
-            Image(systemName: "lock.shield.fill").foregroundStyle(Tokens.warn)
+            Image(systemName: "key.fill").foregroundStyle(Tokens.text3)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Some actions need the privileged helper")
+                Text("Root actions prompt for your admin password")
                     .font(.system(size: 12, weight: .semibold)).foregroundStyle(Tokens.text)
-                Text("Ships with the v1.0 Developer-ID-signed build. Until then, RAM purge, DNS flush, mdutil reindex, and periodic scripts are disabled.")
+                Text("RAM purge, DNS flush, mdutil reindex, and periodic scripts pop a single TouchID/password prompt per click and run as root.")
                     .font(.system(size: 11)).foregroundStyle(Tokens.text3)
             }
             Spacer()
         }
         .padding(.horizontal, 24).padding(.vertical, 12)
-        .background(Tokens.warn.opacity(0.10))
+        .background(Tokens.bgPanel2)
     }
 
     @ViewBuilder
     private func actionCard(_ a: MaintenanceAction) -> some View {
-        let disabled = a.requiresHelper && !m.helperAvailable
+        let disabled = false   // historic: was `a.requiresHelper && !m.helperAvailable`
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 12) {
                 statusDot(a.status, disabled: disabled)
