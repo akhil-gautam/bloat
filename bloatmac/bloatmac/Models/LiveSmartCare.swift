@@ -17,15 +17,45 @@ final class LiveSmartCare: ObservableObject {
 
     enum Step: String, CaseIterable {
         case idle, storage, caches, duplicates, startup, memory, done
+
+        /// Order in the scan pipeline. `idle` and `done` are sentinels and
+        /// don't have a place in the rendered step list.
+        static var pipeline: [Step] { [.storage, .caches, .duplicates, .startup, .memory] }
+
         var label: String {
             switch self {
             case .idle:       return "Ready"
+            case .storage:    return "Storage"
+            case .caches:     return "Caches & downloads"
+            case .duplicates: return "Duplicates"
+            case .startup:    return "Startup items"
+            case .memory:     return "Memory pressure"
+            case .done:       return "Done"
+            }
+        }
+
+        /// Verb-form copy used in the centered hero text while the step is
+        /// running. The label form above is for the step list.
+        var runningCopy: String {
+            switch self {
+            case .idle:       return "Ready"
             case .storage:    return "Refreshing storage…"
-            case .caches:     return "Scanning caches & downloads…"
-            case .duplicates: return "Hashing duplicates…"
-            case .startup:    return "Reviewing startup items…"
+            case .caches:     return "Walking caches & downloads…"
+            case .duplicates: return "Hashing duplicate candidates…"
+            case .startup:    return "Reviewing launch agents…"
             case .memory:     return "Sampling memory…"
             case .done:       return "Done"
+            }
+        }
+
+        var icon: String {
+            switch self {
+            case .idle, .done: return "sparkles"
+            case .storage:     return "internaldrive"
+            case .caches:      return "tray.full"
+            case .duplicates:  return "doc.on.doc"
+            case .startup:     return "powerplug"
+            case .memory:      return "memorychip"
             }
         }
     }
