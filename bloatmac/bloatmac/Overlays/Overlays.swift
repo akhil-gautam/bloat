@@ -82,17 +82,26 @@ struct MenuBarWidgetPopover: View {
             HStack(spacing: 8) {
                 BrandMark()
                 Text("BloatMac").font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(Tokens.text)
                 Spacer()
                 Button("Open app ›") { state.widgetOpen = false }
-                    .buttonStyle(.plain).font(.system(size: 11)).opacity(0.7)
+                    .buttonStyle(.plain).font(.system(size: 11))
+                    .foregroundStyle(Tokens.text2)
             }
             HStack(spacing: 12) {
-                Ring(value: pct, size: 56, stroke: 6, color: pct > 0.85 ? Tokens.danger : pct > 0.7 ? Tokens.warn : Tokens.good,
+                Ring(value: pct, size: 56, stroke: 6,
+                     color: pct > 0.85 ? Tokens.danger : pct > 0.7 ? Tokens.warn : Tokens.good,
                      label: "\(Int((pct * 100).rounded()))%")
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Storage").font(.system(size: 11, weight: .semibold)).opacity(0.7)
-                    Text("\(Int(live.usedGB.rounded())) GB used").font(.system(size: 14, weight: .bold))
-                    Text("\(Int(live.freeGB.rounded())) GB free").font(.system(size: 11)).opacity(0.7)
+                    Text("Storage")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Tokens.text3)
+                    Text("\(Int(live.usedGB.rounded())) GB used")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(Tokens.text)
+                    Text("\(Int(live.freeGB.rounded())) GB free")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Tokens.text3)
                 }
                 Spacer()
             }.padding(.top, 12)
@@ -104,13 +113,12 @@ struct MenuBarWidgetPopover: View {
         }
         .padding(14)
         .frame(width: 280)
-        .background(.ultraThinMaterial)
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.12)))
+        .background(Tokens.bgPanel)
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Tokens.border))
         .clipShape(RoundedRectangle(cornerRadius: 12))
-        .shadow(color: .black.opacity(0.5), radius: 32, y: 12)
+        .shadow(color: .black.opacity(0.30), radius: 28, y: 10)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
         .padding(.top, 64).padding(.trailing, 60)
-        .foregroundStyle(.white)
     }
 }
 
