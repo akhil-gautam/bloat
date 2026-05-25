@@ -294,7 +294,7 @@ fn draw_top_consumers(frame: &mut Frame, app: &App, area: Rect) {
     // Title line
     let title = Line::from(vec![
         Span::styled(
-            "Top Space Consumers",
+            "Top Space Consumers · powered by Cognitivebear",
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
