@@ -382,21 +382,21 @@ color = "blue"
 
 [[panel]]
 name = "Ollama"
-command = "curl -s localhost:11434/api/tags 2>/dev/null | python3 -c 'import sys,json; [print(m[\"name\"]) for m in json.load(sys.stdin).get(\"models\",[])]' || echo 'Ollama not running'"
+command = "curl -s localhost:11434/api/tags 2>/dev/null | python3 -c 'import sys,json; [print(m[\\"name\\"]) for m in json.load(sys.stdin).get(\\"models\\",[])]' || echo 'Ollama not running'"
 interval = 30
 position = "right"
 color = "magenta"
 
 [[panel]]
 name = "Docker"
-command = "docker ps --format '{{.Names}}\\t{{.Status}}' 2>/dev/null | head -5 || echo 'Docker not running'"
+command = "docker ps --format '{{.Names}}\t{{.Status}}' 2>/dev/null | head -5 || echo 'Docker not running'"
 interval = 10
 position = "left"
 color = "cyan"
 
 [[panel]]
 name = "Git"
-command = "cd ~/projects && for d in */; do echo \"$d$(cd $d && git status --short 2>/dev/null | wc -l | tr -d ' ') changes\"; done | head -5"
+command = "cd ~/projects && for d in */; do echo \\"$d$(cd $d && git status --short 2>/dev/null | wc -l | tr -d ' ')\\" changes\\\"; done | head -5"
 interval = 30
 position = "left"
 color = "green"
@@ -427,10 +427,10 @@ plugin → bloat (stdout): {"type":"panel","title":"My Panel","rows":[{"text":"L
 while IFS= read -r line; do
     info=$(redis-cli info memory 2>/dev/null)
     if [ $? -eq 0 ]; then
-        used=$(echo "$info" | grep "used_memory_human" | cut -d: -f2 | tr -d '\r')
-        echo "{\"type\":\"panel\",\"title\":\"Redis\",\"rows\":[{\"text\":\"Memory: $used\",\"color\":\"green\"}]}"
+        used=$(echo "$info" | grep "used_memory_human" | cut -d: -f2 | tr -d '\\r')
+        echo "{\\"type\\":\\"panel\\",\\"title\\":\\"Redis\\",\\"rows\\\":[{\\"text\\":\\"Memory: $used\\",\\"color\\":\\"green\\"}]}\"
     else
-        echo "{\"type\":\"panel\",\"title\":\"Redis\",\"rows\":[{\"text\":\"Not running\",\"color\":\"red\"}]}"
+        echo "{\\"type\\":\\"panel\\",\\"title\\":\\"Redis\\",\\"rows\\\":[{\\"text\\":\\"Not running\\",\\"color\\\":\\"red\\"}]}\"
     fi
 done
 ```
@@ -528,7 +528,7 @@ Create `~/.config/bloat/plugins.toml` to monitor your database alongside system 
 # Connection states (active, idle, etc.)
 [[panel]]
 name = "PG Connections"
-command = "psql -c \"SELECT state, count(*) FROM pg_stat_activity GROUP BY state ORDER BY count DESC;\" -t 2>/dev/null || echo 'PG not running'"
+command = "psql -c \\"SELECT state, count(*) FROM pg_stat_activity GROUP BY state ORDER BY count DESC;\\" -t 2>/dev/null || echo 'PG not running'"
 interval = 5
 position = "right"
 color = "blue"
@@ -536,7 +536,7 @@ color = "blue"
 # Currently running queries
 [[panel]]
 name = "PG Active Queries"
-command = "psql -c \"SELECT pid, now()-query_start as duration, left(query,50) FROM pg_stat_activity WHERE state='active' AND query NOT LIKE '%pg_stat%' ORDER BY duration DESC LIMIT 5;\" -t 2>/dev/null || echo 'None'"
+command = "psql -c \\"SELECT pid, now()-query_start as duration, left(query,50) FROM pg_stat_activity WHERE state='active' AND query NOT LIKE '%pg_stat%' ORDER BY duration DESC LIMIT 5;\\" -t 2>/dev/null || echo 'None'"
 interval = 5
 position = "right"
 color = "blue"
@@ -544,7 +544,7 @@ color = "blue"
 # Database sizes
 [[panel]]
 name = "PG Databases"
-command = "psql -c \"SELECT datname, pg_size_pretty(pg_database_size(datname)) as size FROM pg_database WHERE datistemplate=false ORDER BY pg_database_size(datname) DESC LIMIT 8;\" -t 2>/dev/null || echo 'PG not running'"
+command = "psql -c \\"SELECT datname, pg_size_pretty(pg_database_size(datname)) as size FROM pg_database WHERE datistemplate=false ORDER BY pg_database_size(datname) DESC LIMIT 8;\\" -t 2>/dev/null || echo 'PG not running'"
 interval = 30
 position = "left"
 color = "blue"
@@ -552,7 +552,7 @@ color = "blue"
 # Largest tables in your app database
 [[panel]]
 name = "PG Top Tables"
-command = "psql -d myapp_development -c \"SELECT schemaname||'.'||relname, pg_size_pretty(pg_total_relation_size(relid)) FROM pg_catalog.pg_statio_user_tables ORDER BY pg_total_relation_size(relid) DESC LIMIT 5;\" -t 2>/dev/null || echo 'No tables'"
+command = "psql -d myapp_development -c \\"SELECT schemaname||'.'||relname, pg_size_pretty(pg_total_relation_size(relid)) FROM pg_catalog.pg_statio_user_tables ORDER BY pg_total_relation_size(relid) DESC LIMIT 5;\\" -t 2>/dev/null || echo 'No tables'"
 interval = 30
 position = "left"
 color = "cyan"
@@ -627,3 +627,11 @@ src/
 ## License
 
 MIT
+
+---
+
+## Cognitivebear smoke test
+
+This PR was opened by Cognitivebear's local smoke test on 2026-05-25.
+It validates the action agent end-to-end against a real repository
+via OrbStack + Vertex AI Gemini.
