@@ -15,6 +15,7 @@ import Combine
 /// window, a `macappstore://` deep-link, or just launching the app so its own
 /// Sparkle controller takes over.
 enum UpdateSource: String { case brew, mas, sparkle }
+enum UpdateSourceState: Equatable { case checking, available, unavailable, failed }
 
 struct UpdateCandidate: Identifiable, Hashable {
     let id: String       // composite — "brew:firefox", "mas:497799835", "sparkle:com.example.foo"
@@ -36,26 +37,36 @@ final class LiveUpdater: ObservableObject {
     @Published private(set) var phase: String = ""
     @Published private(set) var progress: Double = 0
     @Published private(set) var lastError: String? = nil
-    @Published private(set) var brewAvailable: Bool = false
-    @Published private(set) var masAvailable: Bool = false
+    @Published private(set) var brewState: UpdateSourceState = .checking
+    @Published private(set) var masState: UpdateSourceState = .checking
+    @Published private(set) var sparkleState: UpdateSourceState = .checking
+    @Published private(set) var hasCompletedScan: Bool = false
+
+    var brewAvailable: Bool { brewState == .available }
+    var masAvailable: Bool { masState == .available }
 
     var totalCount: Int { candidates.count }
 
     private var task: Task<Void, Never>? = nil
+    private var generation = 0
     private init() {}
 
     func startIfNeeded() {
-        if candidates.isEmpty && !scanning { scan() }
+        if !hasCompletedScan && !scanning { scan() }
     }
 
     func scan() {
         cancel()
-        scanning = true; candidates = []; progress = 0
+        generation += 1
+        let scanGeneration = generation
+        scanning = true; candidates = []; progress = 0; lastError = nil; hasCompletedScan = false
+        brewState = .checking; masState = .checking; sparkleState = .checking
         phase = "Checking sources…"
-        task = Task.detached(priority: .userInitiated) { await Self.runScan() }
+        task = Task.detached(priority: .userInitiated) { await Self.runScan(generation: scanGeneration) }
     }
 
     func cancel() {
+        generation += 1
         task?.cancel(); task = nil; scanning = false
     }
 
@@ -101,41 +112,51 @@ final class LiveUpdater: ObservableObject {
 
     // MARK: - Scan implementation
 
-    private nonisolated static func runScan() async {
-        async let brewResult: ([UpdateCandidate], Bool) = scanBrew()
-        async let masResult:  ([UpdateCandidate], Bool) = scanMAS()
-        async let sparkleResult: [UpdateCandidate]      = scanSparkle()
+    private nonisolated static func runScan(generation: Int) async {
+        async let brewResult = scanBrew()
+        async let masResult = scanMAS()
+        async let sparkleResult = scanSparkle()
 
-        let (brewRows, brewOK) = await brewResult
-        let (masRows, masOK)   = await masResult
-        let sparkleRows        = await sparkleResult
+        let brew = await brewResult
+        let mas = await masResult
+        let sparkle = await sparkleResult
 
         // De-dupe: prefer brew over sparkle when the same app is managed by
         // Homebrew (avoids the user seeing the same outdated app in two rows).
-        let brewBundleIDs = Set(brewRows.map(\.bundleID).filter { !$0.isEmpty })
-        let sparkleFiltered = sparkleRows.filter { !brewBundleIDs.contains($0.bundleID) }
+        let brewBundleIDs = Set(brew.rows.map(\.bundleID).filter { !$0.isEmpty })
+        let sparkleFiltered = sparkle.rows.filter { !brewBundleIDs.contains($0.bundleID) }
 
-        let all = (brewRows + masRows + sparkleFiltered)
+        let all = (brew.rows + mas.rows + sparkleFiltered)
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        let errors = [brew.error, mas.error, sparkle.error].compactMap { $0 }
 
         await MainActor.run {
-            LiveUpdater.shared.candidates = all
-            LiveUpdater.shared.brewAvailable = brewOK
-            LiveUpdater.shared.masAvailable  = masOK
-            LiveUpdater.shared.scanning = false
-            LiveUpdater.shared.progress = 1
-            LiveUpdater.shared.phase = "Done"
+            let model = LiveUpdater.shared
+            guard model.generation == generation, !Task.isCancelled else { return }
+            model.candidates = all
+            model.brewState = brew.state
+            model.masState = mas.state
+            model.sparkleState = sparkle.state
+            model.lastError = errors.isEmpty ? nil : errors.joined(separator: "\n")
+            model.hasCompletedScan = true
+            model.scanning = false
+            model.progress = 1
+            model.phase = "Done"
         }
     }
 
     // MARK: - Homebrew
 
-    private nonisolated static func scanBrew() async -> ([UpdateCandidate], Bool) {
-        guard let brew = which("brew") else { return ([], false) }
-        guard let json = run([brew, "outdated", "--cask", "--json=v2"]) else { return ([], true) }
+    private nonisolated static func scanBrew() async -> (rows: [UpdateCandidate], state: UpdateSourceState, error: String?) {
+        guard let brew = which("brew") else { return ([], .unavailable, nil) }
+        guard let json = run([brew, "outdated", "--cask", "--json=v2"]) else {
+            return ([], .failed, "Homebrew update check failed.")
+        }
         guard let data = json.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let casks = obj["casks"] as? [[String: Any]] else { return ([], true) }
+              let casks = obj["casks"] as? [[String: Any]] else {
+            return ([], .failed, "Homebrew returned an unreadable update list.")
+        }
 
         var rows: [UpdateCandidate] = []
         for c in casks {
@@ -154,14 +175,16 @@ final class LiveUpdater: ObservableObject {
                 bundleID: "", appURL: nil, extra: token
             ))
         }
-        return (rows, true)
+        return (rows, .available, nil)
     }
 
     // MARK: - Mac App Store
 
-    private nonisolated static func scanMAS() async -> ([UpdateCandidate], Bool) {
-        guard let mas = which("mas") else { return ([], false) }
-        guard let out = run([mas, "outdated"]) else { return ([], true) }
+    private nonisolated static func scanMAS() async -> (rows: [UpdateCandidate], state: UpdateSourceState, error: String?) {
+        guard let mas = which("mas") else { return ([], .unavailable, nil) }
+        guard let out = run([mas, "outdated"]) else {
+            return ([], .failed, "Mac App Store update check failed.")
+        }
         // Each line: "<id> <name> (<installed> -> <latest>)"
         var rows: [UpdateCandidate] = []
         for raw in out.split(separator: "\n") {
@@ -190,12 +213,12 @@ final class LiveUpdater: ObservableObject {
                 bundleID: "", appURL: nil, extra: id
             ))
         }
-        return (rows, true)
+        return (rows, .available, nil)
     }
 
     // MARK: - Sparkle
 
-    private nonisolated static func scanSparkle() async -> [UpdateCandidate] {
+    private nonisolated static func scanSparkle() async -> (rows: [UpdateCandidate], state: UpdateSourceState, error: String?) {
         let fm = FileManager.default
         let appRoots: [URL] = [
             URL(fileURLWithPath: "/Applications"),
@@ -214,24 +237,30 @@ final class LiveUpdater: ObservableObject {
         // saturating the wifi link isn't.
         let chunkSize = 8
         var rows: [UpdateCandidate] = []
+        var failures = 0
         for chunk in bundles.chunked(into: chunkSize) {
-            await withTaskGroup(of: UpdateCandidate?.self) { group in
+            await withTaskGroup(of: (UpdateCandidate?, Bool).self) { group in
                 for app in chunk {
                     group.addTask { await sparkleCandidate(for: app) }
                 }
-                for await c in group {
-                    if let c = c { rows.append(c) }
+                for await (candidate, failed) in group {
+                    if let candidate { rows.append(candidate) }
+                    if failed { failures += 1 }
                 }
             }
         }
-        return rows
+        return (
+            rows,
+            failures == 0 ? .available : .failed,
+            failures == 0 ? nil : "\(failures) Sparkle feed\(failures == 1 ? "" : "s") could not be checked."
+        )
     }
 
-    private nonisolated static func sparkleCandidate(for app: URL) async -> UpdateCandidate? {
+    private nonisolated static func sparkleCandidate(for app: URL) async -> (UpdateCandidate?, Bool) {
         let info = app.appendingPathComponent("Contents/Info.plist")
-        guard let dict = NSDictionary(contentsOf: info) as? [String: Any] else { return nil }
+        guard let dict = NSDictionary(contentsOf: info) as? [String: Any] else { return (nil, false) }
         guard let feedString = dict["SUFeedURL"] as? String,
-              let feedURL = URL(string: feedString) else { return nil }
+              let feedURL = URL(string: feedString) else { return (nil, false) }
         let bundleID = (dict["CFBundleIdentifier"] as? String) ?? ""
         let installed = (dict["CFBundleShortVersionString"] as? String)
                      ?? (dict["CFBundleVersion"] as? String) ?? ""
@@ -244,16 +273,16 @@ final class LiveUpdater: ObservableObject {
         req.timeoutInterval = 6
         req.setValue("BloatMac/\(installed)", forHTTPHeaderField: "User-Agent")
         guard let (data, _) = try? await URLSession.shared.data(for: req),
-              let xml = String(data: data, encoding: .utf8) else { return nil }
+              let xml = String(data: data, encoding: .utf8) else { return (nil, true) }
 
-        guard let latest = extractLatestVersion(fromAppcast: xml) else { return nil }
-        guard versionLessThan(installed, latest) else { return nil }   // already up to date
-        return UpdateCandidate(
+        guard let latest = extractLatestVersion(fromAppcast: xml) else { return (nil, true) }
+        guard versionLessThan(installed, latest) else { return (nil, false) }   // already up to date
+        return (UpdateCandidate(
             id: "sparkle:\(bundleID)",
             source: .sparkle, name: displayName,
             installed: installed, latest: latest,
             bundleID: bundleID, appURL: app, extra: ""
-        )
+        ), false)
     }
 
     /// Pulls `sparkle:shortVersionString` (preferred) or `sparkle:version`
@@ -323,7 +352,7 @@ final class LiveUpdater: ObservableObject {
 }
 
 private extension Array {
-    func chunked(into size: Int) -> [[Element]] {
+    nonisolated func chunked(into size: Int) -> [[Element]] {
         guard size > 0 else { return [self] }
         var chunks: [[Element]] = []
         var i = 0

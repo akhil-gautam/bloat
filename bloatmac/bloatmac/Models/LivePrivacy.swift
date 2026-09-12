@@ -11,7 +11,7 @@ import Combine
 /// Modifying SQLite while the owner has it open silently corrupts the
 /// journal. We refuse to clean a running target and surface a Quit hint in
 /// the UI.
-enum PrivacyDataKind: String, CaseIterable {
+nonisolated enum PrivacyDataKind: String, CaseIterable {
     case cookies, history, cache, loginData, webData, downloads, sessions
 
     var label: String {
@@ -27,14 +27,23 @@ enum PrivacyDataKind: String, CaseIterable {
     }
 }
 
-struct PrivacyDataItem: Identifiable, Hashable {
+nonisolated struct PrivacyDataItem: Identifiable, Hashable {
     let id: String              // path
     let kind: PrivacyDataKind
     let path: URL
     let bytes: Int64
+    let relatedPaths: [URL]
+
+    init(id: String, kind: PrivacyDataKind, path: URL, bytes: Int64, relatedPaths: [URL] = []) {
+        self.id = id
+        self.kind = kind
+        self.path = path
+        self.bytes = bytes
+        self.relatedPaths = relatedPaths
+    }
 }
 
-struct PrivacyTarget: Identifiable {
+nonisolated struct PrivacyTarget: Identifiable {
     let id: String              // bundle id
     let displayName: String
     let appURL: URL?
@@ -57,6 +66,7 @@ final class LivePrivacy: ObservableObject {
     var totalBytes: Int64 { targets.reduce(0) { $0 + $1.totalBytes } }
 
     private var task: Task<Void, Never>? = nil
+    private var scanGeneration = ScanGeneration()
     private init() {}
 
     func startIfNeeded() {
@@ -65,12 +75,16 @@ final class LivePrivacy: ObservableObject {
 
     func scan() {
         cancel()
+        let generation = scanGeneration.next()
         scanning = true; targets = []
         phase = "Detecting browsers & chat apps…"
-        task = Task.detached(priority: .userInitiated) { await Self.runScan() }
+        task = Task.detached(priority: .userInitiated) { await Self.runScan(generation: generation) }
     }
 
-    func cancel() { task?.cancel(); task = nil; scanning = false }
+    func cancel() {
+        _ = scanGeneration.next()
+        task?.cancel(); task = nil; scanning = false
+    }
 
     /// Trash all selected items. Refuses to clean items belonging to a target
     /// whose host app is currently running.
@@ -79,23 +93,43 @@ final class LivePrivacy: ObservableObject {
         var bytes: Int64 = 0
         var trashed = 0
         var blocked: [String] = []
+        var failures: [String] = []
         let fm = FileManager.default
+        lastError = nil
+        let runningBundles = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
         for target in targets {
-            if target.isRunning {
+            if runningBundles.contains(target.bundleID) {
                 if target.items.contains(where: { ids.contains($0.id) }) {
                     blocked.append(target.displayName)
                 }
                 continue
             }
             for item in target.items where ids.contains(item.id) {
-                if (try? fm.trashItem(at: item.path, resultingItemURL: nil)) != nil {
-                    bytes += item.bytes
-                    trashed += 1
+                let primary = CleanupCandidate(id: item.path, url: item.path,
+                                               bytes: Self.directorySize(item.path))
+                let primaryOutcome = CleanupSafety.performTrash([primary]) {
+                    try fm.trashItem(at: $0, resultingItemURL: nil)
                 }
+                bytes += primaryOutcome.bytes
+                trashed += primaryOutcome.succeeded.count
+                failures.append(contentsOf: primaryOutcome.failures)
+                guard primaryOutcome.failures.isEmpty else { continue }
+
+                let sidecars = item.relatedPaths.map {
+                    CleanupCandidate(id: $0, url: $0, bytes: Self.directorySize($0))
+                }
+                let sidecarOutcome = CleanupSafety.performTrash(sidecars) {
+                    try fm.trashItem(at: $0, resultingItemURL: nil)
+                }
+                bytes += sidecarOutcome.bytes
+                failures.append(contentsOf: sidecarOutcome.failures)
             }
         }
-        if !blocked.isEmpty {
-            lastError = "Skipped while running: " + blocked.joined(separator: ", ") + ". Quit and try again."
+        if !blocked.isEmpty { failures.insert(
+            "Skipped while running: " + blocked.joined(separator: ", ") + ". Quit and try again.", at: 0
+        ) }
+        if !failures.isEmpty {
+            lastError = failures.joined(separator: "\n")
         }
         // Re-scan after a clean so the UI reflects what's actually on disk.
         scan()
@@ -105,7 +139,7 @@ final class LivePrivacy: ObservableObject {
 
     // MARK: - Scan implementation
 
-    private nonisolated static func runScan() async {
+    private nonisolated static func runScan(generation: Int) async {
         let home = URL(fileURLWithPath: NSHomeDirectory())
         let lib = home.appendingPathComponent("Library")
         let appSupport = lib.appendingPathComponent("Application Support")
@@ -157,8 +191,6 @@ final class LivePrivacy: ObservableObject {
         if FileManager.default.fileExists(atPath: safari.path) {
             var items: [PrivacyDataItem] = addIfPresent([
                 (.history,   safari.appendingPathComponent("History.db")),
-                (.history,   safari.appendingPathComponent("History.db-wal")),
-                (.history,   safari.appendingPathComponent("History.db-shm")),
                 (.downloads, safari.appendingPathComponent("Downloads.plist")),
                 (.cache,     safari.appendingPathComponent("LocalStorage")),
                 (.cache,     safari.appendingPathComponent("Databases")),
@@ -234,9 +266,12 @@ final class LivePrivacy: ObservableObject {
             .sorted { $0.totalBytes > $1.totalBytes }
 
         await MainActor.run {
-            LivePrivacy.shared.targets = final
-            LivePrivacy.shared.scanning = false
-            LivePrivacy.shared.phase = "Done"
+            let live = LivePrivacy.shared
+            guard live.scanGeneration.accepts(generation) else { return }
+            live.targets = final
+            live.scanning = false
+            live.task = nil
+            live.phase = "Done"
         }
     }
 
@@ -246,7 +281,12 @@ final class LivePrivacy: ObservableObject {
         let fm = FileManager.default
         var out: [PrivacyDataItem] = []
         for (kind, url) in entries where fm.fileExists(atPath: url.path) {
-            out.append(PrivacyDataItem(id: url.path, kind: kind, path: url, bytes: directorySize(url)))
+            var isDirectory: ObjCBool = false
+            _ = fm.fileExists(atPath: url.path, isDirectory: &isDirectory)
+            let related = isDirectory.boolValue ? [] : Array(CleanupSafety.sqliteFiles(for: url).dropFirst())
+            let bytes = ([url] + related).reduce(Int64(0)) { $0 + directorySize($1) }
+            out.append(PrivacyDataItem(id: url.path, kind: kind, path: url,
+                                       bytes: bytes, relatedPaths: related))
         }
         return out
     }

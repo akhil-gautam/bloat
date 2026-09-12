@@ -13,6 +13,7 @@ struct UninstallerScreen: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
+            ActionError(message: u.lastError).padding(.horizontal, 24)
             Divider()
             if u.apps.isEmpty && !u.scanning {
                 emptyState
@@ -27,11 +28,11 @@ struct UninstallerScreen: View {
                isPresented: $showConfirm) {
             Button("Move to Trash", role: .destructive) {
                 u.uninstall(selection)
-                selection = []
+                selection.formIntersection(Set(u.apps.map(\.id)))
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("\(formatBytes(totalSelected)) will be reclaimed (app bundle plus all leftover support data, caches, and preferences).")
+            Text("Up to \(formatBytes(totalSelected)) will be moved to Trash, including app data and preferences. Quit selected apps first. Shared containers are kept. Disk space is released only when Trash is emptied.")
         }
     }
 
@@ -91,6 +92,7 @@ struct UninstallerScreen: View {
                 set: { all in selection = all ? Set(u.apps.map { $0.id }) : [] }
             )) { EmptyView() }
                 .toggleStyle(.checkbox)
+                .accessibilityLabel("Select all apps")
                 .frame(width: 22)
             Text("App").frame(maxWidth: .infinity, alignment: .leading)
             Text("Bundle ID").frame(width: 200, alignment: .leading)
@@ -136,6 +138,7 @@ private struct UninstallerRow: View {
         HStack(spacing: 12) {
             Toggle(isOn: Binding(get: { selected }, set: { _ in onToggle() })) { EmptyView() }
                 .toggleStyle(.checkbox)
+                .accessibilityLabel("Select \(app.displayName)")
                 .frame(width: 22)
             HStack(spacing: 8) {
                 Image(nsImage: NSWorkspace.shared.icon(forFile: app.id.path))
@@ -174,6 +177,7 @@ private struct UninstallerRow: View {
                 Image(systemName: "arrow.up.right.square").font(.system(size: 13))
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Reveal \(app.displayName) in Finder")
             .frame(width: 80)
             .opacity(hovered ? 1 : 0.5)
         }

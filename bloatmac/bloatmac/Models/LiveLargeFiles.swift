@@ -47,6 +47,7 @@ final class LiveLargeFiles: ObservableObject {
     @Published private(set) var lastError: String? = nil
 
     private var task: Task<Void, Never>? = nil
+    private var scanGeneration = ScanGeneration()
 
     var totalBytes: Int64 { items.reduce(0) { $0 + $1.sizeBytes } }
     var totalSizeText: String {
@@ -78,6 +79,7 @@ final class LiveLargeFiles: ObservableObject {
 
     func scan() {
         cancel()
+        let generation = scanGeneration.next()
         scanning = true
         items = []
         scannedDirs = 0
@@ -86,33 +88,42 @@ final class LiveLargeFiles: ObservableObject {
         let threshold = Int64(thresholdMB) * 1_000_000
         task = Task.detached(priority: .userInitiated) {
             for (i, path) in roots.enumerated() {
-                if Task.isCancelled { break }
-                await Self.scanRoot(path: path, threshold: threshold)
-                await MainActor.run { LiveLargeFiles.shared.scannedDirs = i + 1 }
+                if Task.isCancelled { return }
+                await Self.scanRoot(path: path, threshold: threshold, generation: generation)
+                await MainActor.run {
+                    guard LiveLargeFiles.shared.scanGeneration.accepts(generation) else { return }
+                    LiveLargeFiles.shared.scannedDirs = i + 1
+                }
             }
             await MainActor.run {
-                LiveLargeFiles.shared.scanning = false
-                LiveLargeFiles.shared.items.sort { $0.sizeBytes > $1.sizeBytes }
-                if LiveLargeFiles.shared.items.count > 500 {
-                    LiveLargeFiles.shared.items = Array(LiveLargeFiles.shared.items.prefix(500))
+                let live = LiveLargeFiles.shared
+                guard live.scanGeneration.accepts(generation) else { return }
+                live.scanning = false
+                live.task = nil
+                live.items.sort { $0.sizeBytes > $1.sizeBytes }
+                if live.items.count > 500 {
+                    live.items = Array(live.items.prefix(500))
                 }
             }
         }
     }
 
     func cancel() {
+        _ = scanGeneration.next()
         task?.cancel()
         task = nil
         scanning = false
     }
 
-    func remove(_ ids: Set<URL>) {
-        items.removeAll { ids.contains($0.id) }
-    }
-
     // MARK: - Worker
 
-    nonisolated private static func scanRoot(path: String, threshold: Int64) async {
+    nonisolated private static func scanRoot(path: String, threshold: Int64, generation: Int) async {
+        let items = scanRootItems(path: path, threshold: threshold)
+        guard !Task.isCancelled, !items.isEmpty else { return }
+        await publish(items, generation: generation)
+    }
+
+    nonisolated private static func scanRootItems(path: String, threshold: Int64) -> [LargeFileItem] {
         let fm = FileManager.default
         let url = URL(fileURLWithPath: path)
         let keys: [URLResourceKey] = [
@@ -123,40 +134,34 @@ final class LiveLargeFiles: ObservableObject {
         ]
         guard let en = fm.enumerator(at: url, includingPropertiesForKeys: keys,
                                      options: [.skipsHiddenFiles],
-                                     errorHandler: { _, _ in true }) else { return }
+                                     errorHandler: { _, _ in true }) else { return [] }
 
-        var batch: [LargeFileItem] = []
-        let flushEvery = 25
-        var seen = 0
+        var items: [LargeFileItem] = []
 
         for case let item as URL in en {
             if Task.isCancelled { break }
-            seen += 1
             // Skip walking into bundles (.app, .photoslibrary etc.) — count them as one item
             let v = try? item.resourceValues(forKeys: Set(keys))
             if v?.isPackage == true {
                 en.skipDescendants()
                 if let entry = makeItem(at: item, values: v, threshold: threshold) {
-                    batch.append(entry)
-                    if batch.count >= flushEvery {
-                        let toFlush = batch; batch = []
-                        await MainActor.run { LiveLargeFiles.shared.items.append(contentsOf: toFlush) }
-                    }
+                    items.append(entry)
                 }
                 continue
             }
             guard v?.isRegularFile == true else { continue }
             if let entry = makeItem(at: item, values: v, threshold: threshold) {
-                batch.append(entry)
-                if batch.count >= flushEvery {
-                    let toFlush = batch; batch = []
-                    await MainActor.run { LiveLargeFiles.shared.items.append(contentsOf: toFlush) }
-                }
+                items.append(entry)
             }
         }
-        if !batch.isEmpty {
-            let toFlush = batch
-            await MainActor.run { LiveLargeFiles.shared.items.append(contentsOf: toFlush) }
+        return items
+    }
+
+    nonisolated private static func publish(_ items: [LargeFileItem], generation: Int) async {
+        await MainActor.run {
+            let live = LiveLargeFiles.shared
+            guard live.scanGeneration.accepts(generation) else { return }
+            live.items.append(contentsOf: items)
         }
     }
 
@@ -188,21 +193,18 @@ final class LiveLargeFiles: ObservableObject {
     @discardableResult
     func moveToTrash(_ ids: Set<URL>) -> Int {
         let fm = FileManager.default
-        var trashed = 0
-        var bytes: Int64 = 0
-        for id in ids {
-            let size = items.first(where: { $0.id == id })?.sizeBytes ?? 0
-            do {
-                try fm.trashItem(at: id, resultingItemURL: nil)
-                trashed += 1
-                bytes += size
-            } catch {
-                lastError = "Could not trash \(id.lastPathComponent): \(error.localizedDescription)"
-            }
+        lastError = nil
+        let candidates = items.filter { ids.contains($0.id) }
+            .map { CleanupCandidate(id: $0.id, url: $0.url, bytes: $0.sizeBytes) }
+        let outcome = CleanupSafety.performTrash(candidates) {
+            try fm.trashItem(at: $0, resultingItemURL: nil)
         }
-        items.removeAll { ids.contains($0.id) }
-        if trashed > 0 { CleanupLog.record(module: .largeFiles, itemCount: trashed, bytes: bytes) }
-        return trashed
+        items.removeAll { outcome.succeeded.contains($0.id) }
+        if !outcome.failures.isEmpty { lastError = outcome.failures.joined(separator: "\n") }
+        if !outcome.succeeded.isEmpty {
+            CleanupLog.record(module: .largeFiles, itemCount: outcome.succeeded.count, bytes: outcome.bytes)
+        }
+        return outcome.succeeded.count
     }
 
     func revealInFinder(_ url: URL) {

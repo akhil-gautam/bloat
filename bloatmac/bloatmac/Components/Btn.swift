@@ -9,6 +9,7 @@ struct Btn: View {
     let action: () -> Void
     @EnvironmentObject var state: AppState
     @State private var hover = false
+    @Environment(\.isEnabled) private var isEnabled
 
     var body: some View {
         Button(action: action) {
@@ -24,6 +25,7 @@ struct Btn: View {
             .clipShape(RoundedRectangle(cornerRadius: 6))
         }
         .buttonStyle(.plain)
+        .opacity(isEnabled ? 1 : 0.45)
         .onHover { hover = $0 }
     }
 

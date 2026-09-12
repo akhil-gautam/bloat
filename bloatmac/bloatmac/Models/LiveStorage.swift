@@ -8,6 +8,7 @@ struct LiveCategory: Identifiable, Hashable {
     let color: Color
     let size: Double  // GB (decimal, matching System Settings / Finder)
     var status: Status = .calculated
+    var incomplete: Bool = false
     enum Status { case calculating, calculated, denied }
 }
 
@@ -32,9 +33,17 @@ final class LiveStorage: ObservableObject {
     @Published var apps: [LiveCategory] = []
     @Published var calculating: Bool = true
     @Published var lastError: String? = nil
+    private var scanTask: Task<Void, Never>?
+    private var scanID = UUID()
 
     var usedGB: Double { max(0, totalGB - freeGB) }
     var usedPctText: String { totalGB > 0 ? "\(Int((usedGB / totalGB * 100).rounded()))%" : "—" }
+    var displayCategories: [LiveCategory] {
+        let measured = categories.reduce(0) { $0 + $1.size }
+        let remainder = max(0, usedGB - measured)
+        guard remainder > 0.01 else { return categories }
+        return categories + [LiveCategory(id: "other", name: "Other & unscanned", color: Tokens.catOther, size: remainder)]
+    }
     var cleanableGB: Double {
         categories.filter { ["caches", "downloads", "trash"].contains($0.id) && $0.status == .calculated }
                   .reduce(0) { $0 + $1.size }
@@ -43,7 +52,7 @@ final class LiveStorage: ObservableObject {
     nonisolated static let categorySpec: [CategorySpec] = {
         let home = NSHomeDirectory()
         return [
-            CategorySpec(id: "apps",      name: "Applications",  hex: 0x0A84FF, paths: ["/Applications"]),
+            CategorySpec(id: "apps",      name: "Applications",  hex: 0x0A84FF, paths: ["/Applications", "\(home)/Applications"]),
             CategorySpec(id: "docs",      name: "Documents",     hex: 0x30D158, paths: ["\(home)/Documents"]),
             CategorySpec(id: "photos",    name: "Photos",        hex: 0xFF9F0A, paths: ["\(home)/Pictures"]),
             CategorySpec(id: "videos",    name: "Movies",        hex: 0xBF5AF2, paths: ["\(home)/Movies"]),
@@ -62,6 +71,7 @@ final class LiveStorage: ObservableObject {
     }
 
     func refresh() {
+        lastError = nil
         readVolume()
         categories = Self.categorySpec.map { LiveCategory(id: $0.id, name: $0.name, color: $0.color, size: 0, status: .calculating) }
         apps = []
@@ -70,8 +80,11 @@ final class LiveStorage: ObservableObject {
     }
 
     private func kickScan() {
-        Task.detached(priority: .userInitiated) {
-            await Self.scanAll()
+        scanTask?.cancel()
+        scanID = UUID()
+        let id = scanID
+        scanTask = Task.detached(priority: .userInitiated) {
+            await Self.scanAll(id: id)
         }
     }
 
@@ -86,7 +99,10 @@ final class LiveStorage: ObservableObject {
             .volumeNameKey,
             .volumeLocalizedFormatDescriptionKey,
         ]
-        guard let v = try? url.resourceValues(forKeys: keys) else { return }
+        guard let v = try? url.resourceValues(forKeys: keys) else {
+            lastError = "Could not read volume capacity. Try refreshing Storage."
+            return
+        }
         if let total = v.volumeTotalCapacity {
             totalGB = Double(total) / 1_000_000_000
         }
@@ -102,33 +118,42 @@ final class LiveStorage: ObservableObject {
 
     // MARK: - Category walks
 
-    nonisolated private static func scanAll() async {
+    nonisolated private static func scanAll(id: UUID) async {
         for spec in categorySpec {
-            let bytes = directoryBytes(at: spec.paths)
-            let gb = Double(bytes) / 1_000_000_000
+            guard !Task.isCancelled else { return }
+            let result = directoryMeasurement(at: spec.paths)
+            let gb = Double(result.bytes) / 1_000_000_000
             await MainActor.run {
                 let store = LiveStorage.shared
+                guard store.scanID == id else { return }
                 if let i = store.categories.firstIndex(where: { $0.id == spec.id }) {
-                    store.categories[i] = LiveCategory(id: spec.id, name: spec.name, color: spec.color, size: gb, status: .calculated)
+                    store.categories[i] = LiveCategory(id: spec.id, name: spec.name, color: spec.color, size: gb, status: .calculated, incomplete: result.incomplete)
                 }
             }
         }
         let appsList = applicationsBreakdown()
         await MainActor.run {
+            guard LiveStorage.shared.scanID == id else { return }
             LiveStorage.shared.apps = appsList
             LiveStorage.shared.calculating = false
         }
     }
 
     nonisolated private static func directoryBytes(at paths: [String]) -> Int64 {
+        directoryMeasurement(at: paths).bytes
+    }
+
+    nonisolated private static func directoryMeasurement(at paths: [String]) -> (bytes: Int64, incomplete: Bool) {
         var total: Int64 = 0
+        var incomplete = false
         let fm = FileManager.default
         let keys: [URLResourceKey] = [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey, .fileSizeKey, .isDirectoryKey, .isRegularFileKey]
         for path in paths {
             guard fm.fileExists(atPath: path) else { continue }
             let url = URL(fileURLWithPath: path)
-            guard let en = fm.enumerator(at: url, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles], errorHandler: { _, _ in true }) else { continue }
+            guard let en = fm.enumerator(at: url, includingPropertiesForKeys: keys, options: [], errorHandler: { _, _ in incomplete = true; return true }) else { incomplete = true; continue }
             for case let item as URL in en {
+                if Task.isCancelled { return (total, true) }
                 let v = try? item.resourceValues(forKeys: Set(keys))
                 if v?.isRegularFile != true { continue }
                 if let s = v?.totalFileAllocatedSize { total += Int64(s); continue }
@@ -136,7 +161,7 @@ final class LiveStorage: ObservableObject {
                 if let s = v?.fileSize                { total += Int64(s) }
             }
         }
-        return total
+        return (total, incomplete)
     }
 
     nonisolated private static func applicationsBreakdown() -> [LiveCategory] {

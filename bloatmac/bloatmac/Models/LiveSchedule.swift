@@ -5,7 +5,7 @@ import SwiftUI
 
 /// In-process scheduler for periodic Smart Care runs. Wakes a Timer at the
 /// configured cadence, kicks off `LiveSmartCare.run()`, and (optionally)
-/// posts a user notification when the result reclaimable total crosses
+/// posts a user notification when the result candidate total crosses
 /// `notifyThresholdBytes`.
 ///
 /// This is the "while the app is open" version. A true background daemon
@@ -46,9 +46,6 @@ final class LiveSchedule: ObservableObject {
             configureTimer()
         }
     }
-    @Published var dryRun: Bool {
-        didSet { defaults.set(dryRun, forKey: "scheduleDryRun") }
-    }
     @Published var notifyOnFinding: Bool {
         didSet { defaults.set(notifyOnFinding, forKey: "scheduleNotify") }
     }
@@ -56,47 +53,60 @@ final class LiveSchedule: ObservableObject {
         didSet { defaults.set(notifyThresholdBytes, forKey: "scheduleThresholdBytes") }
     }
     @Published private(set) var lastRunAt: Date?
+    @Published private(set) var nextRunAt: Date?
     @Published private(set) var notificationsAuthorized: Bool = false
+    @Published private(set) var isRunning: Bool = false
 
     private let defaults = UserDefaults.standard
     private var timer: Timer?
+    private var started = false
 
     private init() {
         let cadenceRaw = defaults.string(forKey: "scheduleCadence") ?? ScheduleCadence.off.rawValue
         cadence = ScheduleCadence(rawValue: cadenceRaw) ?? .off
-        // First-run defaults: dryRun on, notify on, 1 GB threshold.
-        if defaults.object(forKey: "scheduleDryRun") == nil { defaults.set(true, forKey: "scheduleDryRun") }
+        // Smart Care schedules are scan-only. No cleanup setting is needed.
         if defaults.object(forKey: "scheduleNotify") == nil { defaults.set(true, forKey: "scheduleNotify") }
         if defaults.object(forKey: "scheduleThresholdBytes") == nil {
-            defaults.set(Int64(1_073_741_824), forKey: "scheduleThresholdBytes")
+            defaults.set(Int64(1_000_000_000), forKey: "scheduleThresholdBytes")
         }
-        dryRun = defaults.bool(forKey: "scheduleDryRun")
         notifyOnFinding = defaults.bool(forKey: "scheduleNotify")
-        notifyThresholdBytes = Int64(defaults.integer(forKey: "scheduleThresholdBytes"))
+        notifyThresholdBytes = SystemStatusPolicy.normalizedScheduleThreshold(
+            Int64(defaults.integer(forKey: "scheduleThresholdBytes"))
+        )
+        defaults.set(notifyThresholdBytes, forKey: "scheduleThresholdBytes")
         let lastInterval = defaults.double(forKey: "scheduleLastRun")
         lastRunAt = lastInterval > 0 ? Date(timeIntervalSince1970: lastInterval) : nil
+        nextRunAt = nil
 
-        configureTimer()
         Task { await refreshAuthorization() }
     }
 
-    var nextRunAt: Date? {
-        guard let interval = cadence.interval else { return nil }
-        let base = lastRunAt ?? Date()
-        return base.addingTimeInterval(interval)
+    /// Starts the in-process timer. Call once during app launch; schedules do
+    /// not run while BloatMac is closed.
+    func start() {
+        guard !started else { return }
+        started = true
+        configureTimer()
     }
 
     func runNow() {
-        Task { await runSmartCareAndNotify() }
+        guard !isRunning else { return }
+        Task {
+            await runSmartCareAndNotify()
+            configureTimer()
+        }
     }
 
     // MARK: - Timer
 
     private func configureTimer() {
         timer?.invalidate()
-        guard let interval = cadence.interval else { return }
-        let lastRun = lastRunAt ?? .distantPast
+        timer = nil
+        nextRunAt = nil
+        guard started, let interval = cadence.interval else { return }
+        let lastRun = lastRunAt ?? Date()
         let dueIn = max(60, interval - Date().timeIntervalSince(lastRun))
+        nextRunAt = Date().addingTimeInterval(dueIn)
         timer = Timer.scheduledTimer(withTimeInterval: dueIn, repeats: false) { [weak self] _ in
             guard let self else { return }
             Task { @MainActor in
@@ -107,12 +117,17 @@ final class LiveSchedule: ObservableObject {
     }
 
     private func runSmartCareAndNotify() async {
+        guard !isRunning, !LiveSmartCare.shared.running else { return }
+        isRunning = true
+        defer { isRunning = false }
+        let previousResultDate = LiveSmartCare.shared.result?.runAt
         await LiveSmartCare.shared.run()
+        guard let result = LiveSmartCare.shared.result,
+              result.runAt != previousResultDate else { return }
         let now = Date()
         defaults.set(now.timeIntervalSince1970, forKey: "scheduleLastRun")
         lastRunAt = now
         guard notifyOnFinding,
-              let result = LiveSmartCare.shared.result,
               result.cleanableBytes >= notifyThresholdBytes else { return }
         await postNotification(result: result)
     }
@@ -138,7 +153,7 @@ final class LiveSchedule: ObservableObject {
         let bcf = ByteCountFormatter()
         bcf.allowedUnits = [.useGB, .useMB]
         bcf.countStyle = .file
-        content.body = "\(bcf.string(fromByteCount: result.cleanableBytes)) reclaimable. Tap to review."
+        content.body = "\(bcf.string(fromByteCount: result.cleanableBytes)) in review candidates. Tap to review."
         content.sound = .default
         let request = UNNotificationRequest(identifier: "smartCare-\(Int(Date().timeIntervalSince1970))",
                                             content: content, trigger: nil)

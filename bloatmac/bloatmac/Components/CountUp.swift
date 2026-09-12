@@ -6,18 +6,25 @@ struct CountUp: View {
     var decimals: Int = 1
     var suffix: String = ""
 
-    @State private var displayed: Double = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var animating = false
     @State private var start: Date? = nil
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1/60)) { context in
-            let progress = progress(at: context.date)
+        TimelineView(.animation(minimumInterval: 1/60, paused: !animating || reduceMotion)) { context in
+            let progress = reduceMotion || !animating ? 1 : progress(at: context.date)
             let eased = 1 - pow(1 - progress, 3)
             let v = value * eased
             Text(String(format: "%.\(decimals)f%@", v, suffix))
         }
-        .onAppear { start = Date() }
-        .onChange(of: value) { _, _ in start = Date() }
+        .task(id: value) {
+            guard !reduceMotion, duration > 0 else { animating = false; return }
+            start = Date()
+            animating = true
+            try? await Task.sleep(for: .seconds(duration))
+            guard !Task.isCancelled else { return }
+            animating = false
+        }
     }
 
     private func progress(at now: Date) -> Double {

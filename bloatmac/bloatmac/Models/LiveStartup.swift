@@ -11,8 +11,8 @@ enum StartupScope: String, CaseIterable, Identifiable {
     case systemAgent    // /System/Library/LaunchAgents
     case systemDaemon   // /System/Library/LaunchDaemons
 
-    var id: String { rawValue }
-    var path: String {
+    nonisolated var id: String { rawValue }
+    nonisolated var path: String {
         switch self {
         case .userAgent:    return "\(NSHomeDirectory())/Library/LaunchAgents"
         case .adminAgent:   return "/Library/LaunchAgents"
@@ -21,7 +21,7 @@ enum StartupScope: String, CaseIterable, Identifiable {
         case .systemDaemon: return "/System/Library/LaunchDaemons"
         }
     }
-    var label: String {
+    nonisolated var label: String {
         switch self {
         case .userAgent:    return "User agents"
         case .adminAgent:   return "Admin agents"
@@ -30,7 +30,7 @@ enum StartupScope: String, CaseIterable, Identifiable {
         case .systemDaemon: return "System daemons"
         }
     }
-    var shortLabel: String {
+    nonisolated var shortLabel: String {
         switch self {
         case .userAgent:    return "User"
         case .adminAgent:   return "Admin"
@@ -48,8 +48,8 @@ enum StartupScope: String, CaseIterable, Identifiable {
         case .systemDaemon: return Tokens.text4
         }
     }
-    var isWritable: Bool { self == .userAgent }
-    var isDaemon: Bool   { self == .adminDaemon || self == .systemDaemon }
+    nonisolated var isWritable: Bool { self == .userAgent }
+    nonisolated var isDaemon: Bool   { self == .adminDaemon || self == .systemDaemon }
 }
 
 enum StartupRisk: Int { case known = 0, unknown = 1, flagged = 2
@@ -80,10 +80,10 @@ struct LaunchAgentItem: Identifiable, Hashable {
     let publisher: String       // for AI risk classification
     let risk: StartupRisk
 
-    var displayName: String { appName ?? label }
-    var sourceLabel: String { scope.label }
-    var canRemove: Bool { scope.isWritable }
-    var statePill: String {
+    nonisolated var displayName: String { appName ?? label }
+    nonisolated var sourceLabel: String { scope.label }
+    nonisolated var canRemove: Bool { scope.isWritable }
+    nonisolated var statePill: String {
         if isLoaded { return "Loaded" }
         if isDisabled { return "Disabled" }
         return "Idle"
@@ -125,12 +125,14 @@ final class LiveStartup: ObservableObject {
     @Published var search: String = ""
     @Published var filter: StartupFilter = .all
     @Published var sort: StartupSort = .name
-    @Published var scopeFilter: Set<StartupScope> = Set(StartupScope.allCases)
+    @Published var scopeFilter: Set<StartupScope> = [.userAgent, .adminAgent, .adminDaemon]
 
     /// Memoized filtered+sorted view. Recomputed only when inputs change,
     /// not on every SwiftUI body evaluation.
     @Published private(set) var visible: [LaunchAgentItem] = []
     private var pipelineCancellables = Set<AnyCancellable>()
+    private var task: Task<Void, Never>?
+    private var scanGeneration = ScanGeneration()
 
     var counts: [StartupScope: Int] {
         var d: [StartupScope: Int] = [:]
@@ -205,29 +207,37 @@ final class LiveStartup: ObservableObject {
     }
 
     func rescan() {
+        cancel()
+        let generation = scanGeneration.next()
         scanning = true
         items = []
         phase = "Reading directories…"
         progress = 0
-        Task.detached(priority: .userInitiated) {
-            await Self.publish(phase: "Reading directories…", progress: 0.05)
+        task = Task.detached(priority: .userInitiated) {
+            await Self.publish(phase: "Reading directories…", progress: 0.05, generation: generation)
             let scoped = Self.scanAllScopes()
+            guard !Task.isCancelled else { return }
 
-            await Self.publish(phase: "Querying launchctl list…", progress: 0.15)
+            await Self.publish(phase: "Querying launchctl list…", progress: 0.15, generation: generation)
             let loaded = Self.launchctlListed()
+            guard !Task.isCancelled else { return }
 
-            await Self.publish(phase: "Querying disabled jobs…", progress: 0.25)
+            await Self.publish(phase: "Querying disabled jobs…", progress: 0.25, generation: generation)
             let disabled = Self.launchctlDisabled()
+            guard !Task.isCancelled else { return }
 
             // First pass: build items WITHOUT touching NSWorkspace/Bundle (those
             // have main-thread affinity and can hang from a detached task).
             var all: [LaunchAgentItem] = []
             let totalScopes = max(scoped.count, 1)
             for (idx, pair) in scoped.enumerated() {
+                guard !Task.isCancelled else { return }
                 let (scope, plists) = pair
                 await Self.publish(phase: "Parsing \(scope.label)…",
-                                   progress: 0.25 + 0.40 * Double(idx) / Double(totalScopes))
+                                   progress: 0.25 + 0.40 * Double(idx) / Double(totalScopes),
+                                   generation: generation)
                 for url in plists {
+                    guard !Task.isCancelled else { return }
                     if let item = Self.makeItemFast(at: url, scope: scope, loaded: loaded, disabled: disabled) {
                         all.append(item)
                     }
@@ -236,8 +246,9 @@ final class LiveStartup: ObservableObject {
             // Resolve enclosing .app names off-main (Bundle plist reads are safe on
             // a background executor; only NSWorkspace.icon has main affinity, and
             // we defer that to per-row lazy loading).
-            await Self.publish(phase: "Resolving bundles…", progress: 0.75)
+            await Self.publish(phase: "Resolving bundles…", progress: 0.75, generation: generation)
             for i in all.indices {
+                guard !Task.isCancelled else { return }
                 if let prog = all[i].program {
                     var u = URL(fileURLWithPath: prog)
                     while u.path != "/" {
@@ -261,19 +272,32 @@ final class LiveStartup: ObservableObject {
                     }
                 }
             }
+            let finalItems = all
             await MainActor.run {
-                LiveStartup.shared.items = all
-                LiveStartup.shared.scanning = false
-                LiveStartup.shared.phase = "Done"
-                LiveStartup.shared.progress = 1.0
+                let live = LiveStartup.shared
+                guard live.scanGeneration.accepts(generation) else { return }
+                live.items = finalItems
+                live.scanning = false
+                live.task = nil
+                live.phase = "Done"
+                live.progress = 1.0
             }
         }
     }
 
-    nonisolated private static func publish(phase: String, progress: Double) async {
+    func cancel() {
+        _ = scanGeneration.next()
+        task?.cancel()
+        task = nil
+        scanning = false
+    }
+
+    nonisolated private static func publish(phase: String, progress: Double, generation: Int) async {
         await MainActor.run {
-            LiveStartup.shared.phase = phase
-            LiveStartup.shared.progress = progress
+            let live = LiveStartup.shared
+            guard live.scanGeneration.accepts(generation) else { return }
+            live.phase = phase
+            live.progress = progress
         }
     }
 
@@ -284,12 +308,15 @@ final class LiveStartup: ObservableObject {
             lastError = "Removing items in \(item.scope.label) requires admin rights. Edit them via Login Items in System Settings."
             return false
         }
-        // bootout — best effort, may fail if not loaded
         let domain = "gui/\(getuid())"
-        _ = Self.runShell("/bin/launchctl", ["bootout", domain, item.id.path])
+        if item.isLoaded && Self.runShell("/bin/launchctl", ["bootout", domain, item.id.path]) == nil {
+            lastError = "Could not unload \(item.displayName); its plist was left in place."
+            return false
+        }
         do {
             try FileManager.default.trashItem(at: item.id, resultingItemURL: nil)
             items.removeAll { $0.id == item.id }
+            lastError = nil
             return true
         } catch {
             lastError = "Trash failed: \(error.localizedDescription)"
@@ -303,7 +330,7 @@ final class LiveStartup: ObservableObject {
         let domain = "gui/\(getuid())"
         let action = enabled ? "enable" : "disable"
         let ok = Self.runShell("/bin/launchctl", [action, "\(domain)/\(item.label)"]) != nil
-        if !ok { lastError = "launchctl \(action) failed" }
+        lastError = ok ? nil : "launchctl \(action) failed"
         rescan()
         return ok
     }
@@ -402,7 +429,7 @@ final class LiveStartup: ObservableObject {
         return ""
     }
 
-    private static let knownPublishers: Set<String> = [
+    private nonisolated static let knownPublishers: Set<String> = [
         "apple", "google", "microsoft", "homebrew", "docker", "jetbrains",
         "vmware", "parallels", "oracle", "amazon", "github", "gitlab",
         "1password", "dropbox", "slack", "zoom", "logitech", "elgato",
@@ -411,7 +438,7 @@ final class LiveStartup: ObservableObject {
         "littlesnitch", "objectiveseelite", "bartender", "alfred", "raycast",
         "rectangle", "magnet", "cleanshot", "synology", "synergy",
     ]
-    private static let flaggedPatterns: [String] = [
+    private nonisolated static let flaggedPatterns: [String] = [
         "macupdater.helper", "macupgrade", "machelper", "supercleaner",
         "advancedmackeeper", "mackeeper", "yourmac", "youtubeunblocker",
         "mediadownloader", "torrent", "kuaiya", "rdmagent",
@@ -468,6 +495,7 @@ final class LiveStartup: ObservableObject {
         do { try p.run() } catch { return nil }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         p.waitUntilExit()
+        guard p.terminationStatus == 0 else { return nil }
         return String(data: data, encoding: .utf8)
     }
 }

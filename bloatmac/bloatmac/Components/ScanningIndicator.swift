@@ -5,6 +5,7 @@ struct PulsingDot: View {
     var color: Color
     var size: CGFloat = 8
     @State private var pulse = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack {
@@ -15,11 +16,12 @@ struct PulsingDot: View {
             Circle()
                 .stroke(color, lineWidth: 1.2)
                 .frame(width: size, height: size)
-                .scaleEffect(pulse ? 2.6 : 1)
-                .opacity(pulse ? 0 : 0.7)
+                .scaleEffect(pulse && !reduceMotion ? 2.6 : 1)
+                .opacity(pulse && !reduceMotion ? 0 : 0.7)
         }
         .frame(width: size * 3, height: size * 3)
         .onAppear {
+            guard !reduceMotion else { return }
             withAnimation(.easeOut(duration: 1.3).repeatForever(autoreverses: false)) {
                 pulse = true
             }
@@ -32,11 +34,12 @@ struct Shimmer: ViewModifier {
     var active: Bool
     var color: Color = .white
     @State private var phase: CGFloat = -1
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
         content
             .overlay {
-                if active {
+                if active && !reduceMotion {
                     GeometryReader { geo in
                         let w = geo.size.width
                         LinearGradient(
@@ -63,6 +66,7 @@ struct Shimmer: ViewModifier {
     }
 
     private func startLoop() {
+        guard !reduceMotion else { return }
         phase = -0.2
         withAnimation(.linear(duration: 1.6).repeatForever(autoreverses: false)) {
             phase = 1.2

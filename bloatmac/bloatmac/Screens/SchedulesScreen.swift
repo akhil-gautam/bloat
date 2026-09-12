@@ -17,12 +17,13 @@ struct SchedulesScreen: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Tokens.bgWindow)
+        .task { sched.start() }
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Schedules").font(.system(size: 22, weight: .bold))
-            Text("Run Smart Care automatically and get a notification when reclaimable bytes cross a threshold.")
+            Text("Schedule a Smart Care scan and get a notification when review candidates cross a threshold. Runs only while BloatMac is open.")
                 .font(.system(size: 12)).foregroundStyle(Tokens.text3)
         }
     }
@@ -50,12 +51,8 @@ struct SchedulesScreen: View {
                 }
                 Spacer()
             }
-            HStack {
-                Toggle("Dry-run only (don't trash anything)", isOn: $sched.dryRun)
-                    .toggleStyle(.switch)
-                Spacer()
-            }
-            .font(.system(size: 12))
+            Text("Scheduled runs scan and report results. They never remove files or change system settings.")
+                .font(.system(size: 11)).foregroundStyle(Tokens.text3)
         }
         .padding(16)
         .background(Tokens.bgPanel)
@@ -80,7 +77,7 @@ struct SchedulesScreen: View {
                 }
             }
             HStack {
-                Toggle("Notify when reclaimable crosses threshold", isOn: $sched.notifyOnFinding)
+                Toggle("Notify when review candidates cross threshold", isOn: $sched.notifyOnFinding)
                     .toggleStyle(.switch)
                 Spacer()
             }
@@ -90,7 +87,7 @@ struct SchedulesScreen: View {
                 Text("Threshold")
                     .font(.system(size: 11, weight: .semibold)).foregroundStyle(Tokens.text3)
                 HStack(spacing: 8) {
-                    ForEach([Int64(500_000_000), Int64(1_073_741_824), Int64(5_368_709_120)], id: \.self) { v in
+                    ForEach([Int64(500_000_000), Int64(1_000_000_000), Int64(5_000_000_000)], id: \.self) { v in
                         Button {
                             sched.notifyThresholdBytes = v
                         } label: {
@@ -125,7 +122,8 @@ struct SchedulesScreen: View {
                 statusRow("Next run", sched.nextRunAt.map { fmt($0) } ?? "—")
             }
             HStack {
-                Btn(label: "Run now", icon: "play.fill", style: .primary) { sched.runNow() }
+                Btn(label: sched.isRunning ? "Scanning…" : "Run scan now", icon: "play.fill", style: .primary) { sched.runNow() }
+                    .disabled(sched.isRunning)
                 Spacer()
             }
         }

@@ -19,6 +19,7 @@ struct bloatmacApp: App {
                 .environmentObject(state)
                 .frame(minWidth: 1240, idealWidth: 1480, minHeight: 800, idealHeight: 920)
                 .onAppear {
+                    LiveSchedule.shared.start()
                     applyAppearance(state.themeRaw)
                     if state.menubarWidgetEnabled {
                         StatusItemController.shared.start(state: state)

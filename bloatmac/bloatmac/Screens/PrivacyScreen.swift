@@ -17,6 +17,7 @@ struct PrivacyScreen: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
+            ActionError(message: p.lastError).padding(.horizontal, 24)
             Divider()
             if p.targets.isEmpty && !p.scanning {
                 emptyState
@@ -34,14 +35,17 @@ struct PrivacyScreen: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Tokens.bgWindow)
         .task { p.startIfNeeded() }
+        .onChange(of: p.scanning) { _, scanning in
+            if !scanning { selection.formIntersection(Set(p.targets.flatMap { $0.items.map(\.id) })) }
+        }
         .alert("Clear \(selection.count) item\(selection.count == 1 ? "" : "s")?",
                isPresented: $showConfirm) {
             Button("Move to Trash", role: .destructive) {
-                _ = p.clean(selection); selection = []
+                _ = p.clean(selection)
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("\(formatBytes(totalSelected)) reclaimable. The host app will recreate empty databases on next launch.")
+            Text("Selected history, cookies, saved logins, or sessions will be moved to Trash with their database journals. This may sign you out or remove saved credentials. Quit the affected apps first.")
         }
     }
 
@@ -110,6 +114,7 @@ struct PrivacyScreen: View {
                             }
                         )) { EmptyView() }
                         .toggleStyle(.checkbox)
+                            .accessibilityLabel("Select \(item.kind.label) for \(t.displayName)")
                         .frame(width: 22)
                         .disabled(t.isRunning)
 

@@ -182,6 +182,7 @@ private struct TileView: View {
             .shadow(color: .black.opacity(hover ? 0.25 : 0), radius: 12, y: 4)
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("\(tile.item.name), \(String(format: "%.1f", tile.item.size)) GB")
         .onHover { hover = $0 }
     }
 }

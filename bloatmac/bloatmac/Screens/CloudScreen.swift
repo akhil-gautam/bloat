@@ -4,11 +4,11 @@ struct CloudScreen: View {
     @EnvironmentObject var state: AppState
     @ObservedObject private var c = LiveCloud.shared
     @State private var selection: Set<String> = []
-    @State private var activeProvider: CloudProvider? = nil
+    @State private var activeProvider: String? = nil
     @State private var showConfirm = false
 
     private var visibleInventory: CloudInventory? {
-        if let p = activeProvider { return c.inventories.first(where: { $0.id == p }) }
+        if let p = activeProvider, let match = c.inventories.first(where: { $0.id == p }) { return match }
         return c.inventories.first
     }
 
@@ -24,13 +24,19 @@ struct CloudScreen: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider()
-            if c.inventories.isEmpty && !c.scanning {
+            if c.scanning && c.inventories.isEmpty {
+                loadingState
+            } else if !c.hasCompletedScan {
+                cancelledState
+            } else if c.inventories.isEmpty {
                 emptyState
             } else {
+                if let error = c.lastError { ActionError(message: error) }
                 providerTabs
                 Divider()
                 if let inv = visibleInventory {
-                    table(for: inv)
+                    if inv.items.isEmpty { noCandidatesState(inv) }
+                    else { table(for: inv) }
                 }
             }
         }
@@ -55,7 +61,7 @@ struct CloudScreen: View {
                 if c.scanning {
                     Text(c.phase).font(.system(size: 12)).foregroundStyle(Tokens.text3)
                 } else {
-                    Text("\(c.inventories.count) provider\(c.inventories.count == 1 ? "" : "s") · \(formatBytes(c.totalDownloadedBytes)) cached locally")
+                    Text("\(c.inventories.count) provider\(c.inventories.count == 1 ? "" : "s") · \(formatBytes(c.totalDownloadedBytes)) in local review candidates")
                         .font(.system(size: 12)).foregroundStyle(Tokens.text3)
                 }
             }
@@ -63,7 +69,7 @@ struct CloudScreen: View {
             if c.scanning {
                 ProgressView().controlSize(.small)
             } else {
-                Btn(label: "Re-scan", icon: "arrow.clockwise", style: .ghost) { c.scan() }
+                Btn(label: "Re-scan", icon: "arrow.clockwise", style: .ghost) { selection = []; c.scan() }
             }
             if !selection.isEmpty {
                 Btn(label: "Evict \(selection.count) (\(formatBytes(totalSelected)))",
@@ -82,7 +88,7 @@ struct CloudScreen: View {
                 } label: {
                     HStack(spacing: 8) {
                         Image(systemName: inv.provider.icon).font(.system(size: 12))
-                        Text(inv.provider.displayName).font(.system(size: 12, weight: .semibold))
+                        Text(providerLabel(inv)).font(.system(size: 12, weight: .semibold))
                         Text("· \(formatBytes(inv.downloadedBytes))").font(.system(size: 11)).foregroundStyle(Tokens.text3)
                     }
                     .padding(.horizontal, 14).padding(.vertical, 10)
@@ -106,11 +112,17 @@ struct CloudScreen: View {
                 ForEach(inv.items) { item in
                     CloudRow(item: item,
                              selected: selection.contains(item.id),
+                             canEvict: inv.provider.supportsEviction && item.state == .downloaded,
                              accent: state.accent.value,
                              onToggle: { toggle(item.id) },
                              onReveal: { c.revealInFinder(item.url) })
                     Divider().opacity(0.4)
                 }
+            }
+            if inv.isTruncated {
+                Text("Showing the largest \(inv.items.count) of \(inv.totalItemCount) candidates. The total includes all scanned candidates.")
+                    .font(.system(size: 11)).foregroundStyle(Tokens.text3)
+                    .padding(.horizontal, 24).padding(.vertical, 8)
             }
         }
         if !inv.provider.supportsEviction {
@@ -153,6 +165,37 @@ struct CloudScreen: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    private var loadingState: some View {
+        VStack(spacing: 8) {
+            ProgressView()
+            Text("Detecting cloud providers and local copies…")
+                .font(.system(size: 12)).foregroundStyle(Tokens.text3)
+        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var cancelledState: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "icloud").font(.system(size: 30)).foregroundStyle(Tokens.text3)
+            Text("Cloud scan not completed").font(.system(size: 13, weight: .semibold))
+            Text("Re-scan to detect providers and local-copy candidates.")
+                .font(.system(size: 12)).foregroundStyle(Tokens.text3)
+        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func noCandidatesState(_ inventory: CloudInventory) -> some View {
+        VStack(spacing: 8) {
+            Image(systemName: "icloud.and.arrow.down").font(.system(size: 30)).foregroundStyle(Tokens.text3)
+            Text("No local copies to review").font(.system(size: 13, weight: .semibold))
+            Text("\(providerLabel(inventory)) was detected, but no files of 5 MB or larger are stored locally.")
+                .font(.system(size: 12)).foregroundStyle(Tokens.text3).multilineTextAlignment(.center)
+        }.frame(maxWidth: .infinity, maxHeight: .infinity).padding(40)
+    }
+
+    private func providerLabel(_ inventory: CloudInventory) -> String {
+        let sameProvider = c.inventories.filter { $0.provider == inventory.provider }.count
+        return sameProvider > 1 ? "\(inventory.provider.displayName) · \(inventory.root.lastPathComponent)" : inventory.provider.displayName
+    }
+
     private func formatBytes(_ b: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: b, countStyle: .file)
     }
@@ -161,6 +204,7 @@ struct CloudScreen: View {
 private struct CloudRow: View {
     let item: CloudItem
     let selected: Bool
+    let canEvict: Bool
     let accent: Color
     let onToggle: () -> Void
     let onReveal: () -> Void
@@ -171,7 +215,8 @@ private struct CloudRow: View {
             Toggle(isOn: Binding(get: { selected }, set: { _ in onToggle() })) { EmptyView() }
                 .toggleStyle(.checkbox)
                 .frame(width: 22)
-                .disabled(item.state != .downloaded)
+                .disabled(!canEvict)
+                .accessibilityLabel("Evict local copy of \(item.displayName)")
             VStack(alignment: .leading, spacing: 1) {
                 Text(item.displayName).font(.system(size: 12, weight: .medium)).foregroundStyle(Tokens.text)
                 Text(item.url.path).font(.system(size: 10.5))

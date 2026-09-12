@@ -43,7 +43,7 @@ enum HygieneCategory: String, CaseIterable {
 }
 
 enum HygieneSeverity: String { case ok, info, warning, critical
-    var rank: Int {
+    nonisolated var rank: Int {
         switch self { case .critical: 3; case .warning: 2; case .info: 1; case .ok: 0 }
     }
 }
@@ -67,6 +67,7 @@ final class LiveThreatHygiene: ObservableObject {
     @Published private(set) var phase: String = ""
     @Published private(set) var progress: Double = 0
     @Published private(set) var lastError: String? = nil
+    @Published private(set) var hasCompletedScan: Bool = false
 
     var byCategory: [HygieneCategory: [HygieneFinding]] {
         Dictionary(grouping: findings, by: \.category)
@@ -79,41 +80,53 @@ final class LiveThreatHygiene: ObservableObject {
     }
 
     private var task: Task<Void, Never>? = nil
+    private var generation = 0
     private init() {}
 
     func startIfNeeded() {
-        if findings.isEmpty && !scanning { scan() }
+        if !hasCompletedScan && !scanning { scan() }
     }
 
     func scan() {
         cancel()
-        scanning = true; findings = []; progress = 0
+        generation += 1
+        let scanGeneration = generation
+        scanning = true; findings = []; progress = 0; lastError = nil; hasCompletedScan = false
         phase = "Auditing /Applications…"
-        task = Task.detached(priority: .userInitiated) { await Self.runScan() }
+        task = Task.detached(priority: .userInitiated) { await Self.runScan(generation: scanGeneration) }
     }
 
-    func cancel() { task?.cancel(); task = nil; scanning = false }
+    func cancel() { generation += 1; task?.cancel(); task = nil; scanning = false }
 
     func revealInFinder(_ url: URL) { NSWorkspace.shared.activateFileViewerSelecting([url]) }
 
     // MARK: - Scan
 
-    private nonisolated static func runScan() async {
+    private nonisolated static func runScan(generation: Int) async {
         async let codesign        = scanCodesign()
         async let browser         = scanBrowserExtensions()
         async let quarantine      = scanQuarantineResidue()
         let persistence           = await scanPersistence()
-        let collected             = await codesign + persistence + browser + quarantine
+        let codesignRows = await codesign
+        let browserRows = await browser
+        let quarantineRows = await quarantine
+        let collected = codesignRows + persistence + browserRows + quarantineRows
         // Sort: critical first, then warning, then info; within tier alphabetise by title.
         let sorted = collected.sorted { a, b in
             if a.severity.rank != b.severity.rank { return a.severity.rank > b.severity.rank }
             return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
         }
         await MainActor.run {
-            LiveThreatHygiene.shared.findings = sorted
-            LiveThreatHygiene.shared.scanning = false
-            LiveThreatHygiene.shared.progress = 1
-            LiveThreatHygiene.shared.phase = "Done"
+            let model = LiveThreatHygiene.shared
+            guard model.generation == generation, !Task.isCancelled else { return }
+            model.findings = sorted
+            model.lastError = codesignRows.isEmpty
+                ? "No application signatures could be audited, so this scan is incomplete."
+                : nil
+            model.hasCompletedScan = true
+            model.scanning = false
+            model.progress = 1
+            model.phase = "Done"
         }
     }
 

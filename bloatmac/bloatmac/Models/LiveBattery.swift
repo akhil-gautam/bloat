@@ -371,11 +371,9 @@ final class LiveBattery: ObservableObject {
         if dis.count >= 4 {
             let xs = dis.map { $0.t }
             let ys = dis.map { $0.percent }
-            if let slope = leastSquaresSlope(xs: xs, ys: ys), slope < 0 {
-                predictedDrainPctPerHour = -slope * 3600 * 100
-                let levels = ys.last ?? percent
-                let secsToZero = levels / -slope
-                predictedRemainingMin = max(0, Int(secsToZero / 60))
+            if let forecast = BatteryForecastPolicy.forecast(timestamps: xs, percents: ys) {
+                predictedDrainPctPerHour = forecast.drainPercentPerHour
+                predictedRemainingMin = forecast.remainingMinutes
             } else {
                 predictedDrainPctPerHour = 0
                 predictedRemainingMin = 0
@@ -453,20 +451,6 @@ final class LiveBattery: ObservableObject {
                              body: "No anomalies detected in the recent history."))
         }
         insights = out
-    }
-
-    private func leastSquaresSlope(xs: [Double], ys: [Double]) -> Double? {
-        guard xs.count == ys.count, xs.count >= 2 else { return nil }
-        let n = Double(xs.count)
-        let mx = xs.reduce(0, +) / n
-        let my = ys.reduce(0, +) / n
-        var num = 0.0, den = 0.0
-        for i in 0..<xs.count {
-            let dx = xs[i] - mx
-            num += dx * (ys[i] - my)
-            den += dx * dx
-        }
-        return den == 0 ? nil : num / den
     }
 
     // MARK: - SQLite

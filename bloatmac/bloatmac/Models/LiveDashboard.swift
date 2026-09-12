@@ -99,7 +99,7 @@ struct DashForecast: Identifiable {
     let label: String           // "Disk full"
     let when: String            // "in 12 days"  /  "in 3 hr 24 min"
     let detail: String          // "+1.4 GB/day at current rate"
-    let confidence: Double      // 0…1
+    let confidence: Double?     // regression R² when this card comes from a fitted trend
     let color: Color
     let target: Screen
 }
@@ -149,7 +149,12 @@ final class LiveDashboard: ObservableObject {
 
     @Published private(set) var score: HealthScore = .empty
     @Published private(set) var briefing: String = ""
-    @Published private(set) var briefingAuthor: String = ""    // "Apple Intelligence" / "Heuristic"
+    @Published private(set) var intelligenceStatus: IntelligenceStatus = .rules
+    @Published private(set) var intelligenceReadiness = IntelligenceReadiness(
+        available: false,
+        label: "Unavailable",
+        detail: "Apple Intelligence requires a supported Mac and language."
+    )
     @Published private(set) var recommendations: [DashRecommendation] = []
     @Published private(set) var forecasts: [DashForecast] = []
     @Published private(set) var tickers: [DashTicker] = []
@@ -162,6 +167,15 @@ final class LiveDashboard: ObservableObject {
     private var storageSampleTick: Int = 0
     private var db: OpaquePointer? = nil
     private var storageHistory: [StorageSample] = []
+    private var briefingTask: Task<Void, Never>?
+    private var briefingGeneration = 0
+    private var currentBriefingFingerprint = ""
+    private var currentBriefingFacts: [GroundedFact] = []
+    private var selectedBriefingFactIDs: [String] = []
+    private var activeBriefingFingerprint: String?
+    private var completedBriefingFingerprint: String?
+    private var lastBriefingAttempt: Date?
+    private var lastBriefingAttemptFingerprint: String?
 
     nonisolated private static let dbURL: URL = {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -170,7 +184,19 @@ final class LiveDashboard: ObservableObject {
         return base.appendingPathComponent("dashboard.sqlite")
     }()
 
-    private init() { openDB(); loadStorageHistory() }
+    private init() {
+        openDB()
+        loadStorageHistory()
+        refreshIntelligenceReadiness()
+    }
+
+    func refreshIntelligenceReadiness() {
+        #if canImport(FoundationModels)
+        if #available(macOS 26.0, *) {
+            intelligenceReadiness = IntelligencePolicy.readiness(for: SystemLanguageModel.default)
+        }
+        #endif
+    }
 
     // MARK: - Lifecycle
 
@@ -185,14 +211,19 @@ final class LiveDashboard: ObservableObject {
 
         guard timer == nil else { return }
         recompute()
-        let t = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.recompute() }
+        let t = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { _ in
+            Task { @MainActor in LiveDashboard.shared.recompute() }
         }
         RunLoop.main.add(t, forMode: .common)
         timer = t
     }
 
-    func stop() { timer?.invalidate(); timer = nil }
+    func stop() {
+        timer?.invalidate(); timer = nil
+        briefingTask?.cancel(); briefingTask = nil
+        activeBriefingFingerprint = nil
+        briefingGeneration &+= 1
+    }
 
     func refresh() { recompute() }
 
@@ -219,83 +250,125 @@ final class LiveDashboard: ObservableObject {
         forecasts = computeForecasts()
         timeline = computeTimeline()
         trends = computeTrends()
-        // Always show the deterministic briefing immediately so the UI never blanks.
-        briefing = composeBriefing()
-        briefingAuthor = "Heuristic"
+        let facts = briefingFacts()
+        let fallback = facts.map(\.text).joined(separator: " ")
+        let fingerprint = IntelligencePolicy.rankingFingerprint(for: facts)
+        currentBriefingFacts = facts
+        currentBriefingFingerprint = fingerprint
+        if completedBriefingFingerprint != fingerprint {
+            briefing = fallback
+            if activeBriefingFingerprint == fingerprint {
+                intelligenceStatus = .generating
+            } else if lastBriefingAttemptFingerprint == fingerprint,
+                      case .failed = intelligenceStatus {
+                // Keep the failure visible until the cooldown permits another attempt.
+            } else {
+                intelligenceStatus = .rules
+            }
+        } else {
+            briefing = IntelligencePolicy.groundedText(
+                selectedIDs: selectedBriefingFactIDs,
+                facts: facts,
+                fallback: fallback
+            )
+        }
         lastRefresh = Date()
         refreshing = false
-        // Then upgrade with Apple Intelligence on-device LLM if available.
-        upgradeBriefingWithAppleIntelligence()
+        upgradeBriefingWithAppleIntelligence(facts: facts, fingerprint: fingerprint)
     }
 
-    private func upgradeBriefingWithAppleIntelligence() {
+    private func upgradeBriefingWithAppleIntelligence(
+        facts: [GroundedFact],
+        fingerprint: String
+    ) {
         #if canImport(FoundationModels)
         if #available(macOS 26.0, *) {
-            // Don't try if Apple Intelligence isn't available on this machine.
-            guard SystemLanguageModel.default.isAvailable else { return }
-            let facts = factSheetForLLM()
-            Task { @MainActor in
+            let model = SystemLanguageModel.default
+            intelligenceReadiness = IntelligencePolicy.readiness(for: model)
+            if let reason = IntelligencePolicy.unavailableReason(for: model) {
+                briefingTask?.cancel(); briefingTask = nil
+                activeBriefingFingerprint = nil
+                intelligenceStatus = .unavailable(reason)
+                return
+            }
+            if let active = activeBriefingFingerprint, active != fingerprint {
+                briefingTask?.cancel(); briefingTask = nil
+                activeBriefingFingerprint = nil
+                briefingGeneration &+= 1
+            }
+            let now = Date()
+            guard IntelligencePolicy.shouldStart(
+                fingerprint: fingerprint,
+                activeFingerprint: activeBriefingFingerprint,
+                completedFingerprint: completedBriefingFingerprint,
+                lastAttempt: lastBriefingAttemptFingerprint == fingerprint ? lastBriefingAttempt : nil,
+                now: now
+            ) else { return }
+
+            briefingGeneration &+= 1
+            let generation = briefingGeneration
+            activeBriefingFingerprint = fingerprint
+            lastBriefingAttempt = now
+            lastBriefingAttemptFingerprint = fingerprint
+            intelligenceStatus = .generating
+            let prompt = "Rank the supplied measured facts by importance. Return only their IDs.\n" +
+                facts.map { "\($0.id): \($0.text)" }.joined(separator: "\n")
+            briefingTask = Task { @MainActor [weak self] in
                 do {
                     let session = LanguageModelSession(instructions: """
                         You are the assistant inside a macOS system-utility app called BloatMac.
-                        Write a 2-3 sentence dashboard briefing for the user, in plain English.
-                        Be concrete and reference the strongest signals only. Avoid filler. \
-                        Don't invent numbers — only use the facts provided. No bullet points, \
-                        no markdown, no headings. Use a friendly but matter-of-fact tone.
+                        Select the most important supplied fact IDs. Never create IDs or prose.
                     """)
-                    let response = try await session.respond(to: facts)
-                    let text = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !text.isEmpty {
-                        withAnimation(.easeOut(duration: 0.35)) {
-                            self.briefing = text
-                            self.briefingAuthor = "Apple Intelligence"
-                        }
+                    let schema = try IntelligencePolicy.rankingSchema(for: facts)
+                    let response = try await session.respond(
+                        to: prompt,
+                        schema: schema,
+                        options: GenerationOptions(sampling: .greedy)
+                    )
+                    guard !Task.isCancelled, let self,
+                          IntelligencePolicy.accepts(
+                            generation: generation,
+                            currentGeneration: self.briefingGeneration,
+                            fingerprint: fingerprint,
+                            currentFingerprint: self.currentBriefingFingerprint
+                          ) else { return }
+                    let selectedIDs = IntelligencePolicy.acceptedIDs(
+                        try response.content.value([String].self, forProperty: "factIDs"),
+                        facts: self.currentBriefingFacts
+                    )
+                    let latestFallback = self.currentBriefingFacts.map(\.text).joined(separator: " ")
+                    let text = IntelligencePolicy.groundedText(
+                        selectedIDs: selectedIDs,
+                        facts: self.currentBriefingFacts,
+                        fallback: latestFallback
+                    )
+                    withAnimation(.easeOut(duration: 0.35)) {
+                        self.briefing = text
+                        self.intelligenceStatus = selectedIDs.isEmpty ? .rules : .generated
                     }
+                    self.selectedBriefingFactIDs = selectedIDs
+                    self.completedBriefingFingerprint = fingerprint
+                    self.activeBriefingFingerprint = nil
+                    self.briefingTask = nil
+                } catch is CancellationError {
+                    return
                 } catch {
-                    // Keep the heuristic briefing — silent failure is fine.
+                    guard let self,
+                          IntelligencePolicy.accepts(
+                            generation: generation,
+                            currentGeneration: self.briefingGeneration,
+                            fingerprint: fingerprint,
+                            currentFingerprint: self.currentBriefingFingerprint
+                          ) else { return }
+                    self.activeBriefingFingerprint = nil
+                    self.briefingTask = nil
+                    self.intelligenceStatus = .failed("Apple Intelligence could not rank the current facts. BloatMac kept the measured summary and will retry.")
                 }
             }
         }
+        #else
+        intelligenceStatus = .unavailable("Apple Intelligence is unavailable in this build. BloatMac is showing measured rules.")
         #endif
-    }
-
-    /// Produce a compact, structured fact sheet for the LLM. No PII.
-    private func factSheetForLLM() -> String {
-        let s = score
-        let mem = LiveMemory.shared
-        let bat = LiveBattery.shared
-        let net = LiveNetwork.shared
-        let storage = LiveStorage.shared
-        let dups = LiveDuplicates.shared
-        let st = LiveStartup.shared
-        let lf = LiveLargeFiles.shared
-        let un = LiveUnused.shared
-
-        let usedPct = storage.totalGB > 0 ? Int((storage.usedGB / storage.totalGB * 100).rounded()) : 0
-        var lines: [String] = []
-        lines.append("Health score: \(s.asInt)/100 (grade: \(s.grade.label))")
-        lines.append("Storage: \(usedPct)% used of \(Int(storage.totalGB.rounded())) GB total, \(Int(storage.freeGB.rounded())) GB free")
-        lines.append("Memory pressure: \(mem.pressure.label.lowercased()), used \(Int((mem.usedFraction*100).rounded()))%")
-        if bat.hasBattery {
-            lines.append("Battery: \(Int((bat.percent*100).rounded()))%, state \(bat.state.label.lowercased()), health \(Int((bat.healthFraction*100).rounded()))%, \(bat.cycleCount) cycles")
-            if bat.state == .discharging && bat.predictedDrainPctPerHour > 0 {
-                lines.append(String(format: "Battery drain rate: %.1f%% per hour", bat.predictedDrainPctPerHour))
-            }
-        }
-        if let p = net.primary {
-            lines.append("Network: \(p.type.label) on \(p.id), ping \(net.pingMs >= 0 ? "\(Int(net.pingMs.rounded())) ms" : "unknown")")
-        }
-        lines.append("Duplicates: \(dups.totalGroups) groups, \(dups.totalRecoverableText) recoverable")
-        lines.append("Large files: \(lf.items.count) (\(lf.totalSizeText))")
-        lines.append("Unused & old: \(un.totalCount) items (\(un.totalText))")
-        lines.append("Startup items: \(st.items.count) total, \(st.unknownCount) unverified, \(st.disabledCount) disabled")
-        lines.append("Top recommendation (if any): " + (recommendations.first?.title ?? "none"))
-        let anomalies = computeAnomalies()
-        if !anomalies.isEmpty {
-            lines.append("Anomalies (z-score based):")
-            for a in anomalies { lines.append("  • " + a) }
-        }
-        return "Facts:\n" + lines.joined(separator: "\n")
     }
 
     // MARK: - Score
@@ -443,7 +516,7 @@ final class LiveDashboard: ObservableObject {
             out.append(.init(
                 tone: .danger, icon: "internaldrive.fill",
                 title: "Disk is \(Int((usedPct*100).rounded()))% full",
-                body: "macOS performance degrades quickly past 90% — clear out large files or duplicates.",
+                body: "Storage is nearing capacity. Review large files or duplicates before moving anything to Trash.",
                 actionLabel: "Open Storage", target: .storage, priority: 100
             ))
         }
@@ -477,9 +550,9 @@ final class LiveDashboard: ObservableObject {
         if dups.totalGroups > 0 && dups.totalRecoverable > 1_000_000_000 {
             out.append(.init(
                 tone: .info, icon: "doc.on.doc.fill",
-                title: "Recover \(dups.totalRecoverableText) from duplicates",
-                body: "\(dups.totalGroups) groups of byte- or visually-identical files were found.",
-                actionLabel: "Resolve", target: .duplicates, priority: 80
+                title: "Review \(dups.totalRecoverableText) of duplicate selections",
+                body: "\(dups.totalGroups) groups of byte-identical files or visually similar images were found.",
+                actionLabel: "Review", target: .duplicates, priority: 80
             ))
         }
         if lf.totalBytes > 5_000_000_000 {
@@ -501,8 +574,8 @@ final class LiveDashboard: ObservableObject {
         if dlc.totalCount > 0 {
             out.append(.init(
                 tone: .info, icon: "arrow.down.circle",
-                title: "\(dlc.totalCount) files queued in Downloads & cache",
-                body: "Likely safe to remove old installers, screenshots, and app caches.",
+                title: "\(dlc.totalCount) Downloads & cache candidates found",
+                body: "Review old installers, screenshots, and app caches before removal.",
                 actionLabel: "Open", target: .downloads, priority: 45
             ))
         }
@@ -560,7 +633,7 @@ final class LiveDashboard: ObservableObject {
                     label: "Battery to empty",
                     when: h > 0 ? "in \(h) hr \(m) min" : "in \(m) min",
                     detail: String(format: "Drain %.1f%%/hr", bat.predictedDrainPctPerHour),
-                    confidence: 0.85,
+                    confidence: nil,
                     color: bat.state.color,
                     target: .battery
                 ))
@@ -572,7 +645,7 @@ final class LiveDashboard: ObservableObject {
                     label: "Battery to full",
                     when: h > 0 ? "in \(h) hr \(m) min" : "in \(m) min",
                     detail: bat.adapterWatts > 0 ? "\(bat.adapterWatts) W adapter" : "Charging",
-                    confidence: 0.75,
+                    confidence: nil,
                     color: bat.state.color,
                     target: .battery
                 ))
@@ -589,7 +662,7 @@ final class LiveDashboard: ObservableObject {
                 label: "Disk capacity",
                 when: usedPct >= 0.95 ? "Critical" : usedPct >= 0.85 ? "Watch closely" : "Healthy",
                 detail: "\(Int((usedPct*100).rounded()))% used · \(String(format: "%.0f GB", storage.freeGB)) free — gathering trend",
-                confidence: 0.5,
+                confidence: nil,
                 color: usedPct > 0.85 ? Tokens.danger : usedPct > 0.7 ? Tokens.warn : Tokens.good,
                 target: .storage
             ))
@@ -642,10 +715,11 @@ final class LiveDashboard: ObservableObject {
 
     /// Linear regression on memory used% — returns a forecast if pressure is rising.
     private func memoryRunway(history: [MemorySample]) -> DashForecast? {
-        guard history.count >= 6 else { return nil }
+        let coverage = ObservationCoverage(timestamps: history.map(\.t))
+        guard history.count >= 20, coverage.duration >= 300 else { return nil }
         let xs = history.map { $0.t }
         let ys = history.map { Double($0.u) }
-        guard let lr = LiveDashboard.linearFit(xs: xs, ys: ys) else { return nil }
+        guard let lr = LiveDashboard.linearFit(xs: xs, ys: ys), lr.r2 >= 0.35 else { return nil }
         let slope = lr.slope                // fraction per second
         if slope <= 0 {
             return DashForecast(
@@ -658,7 +732,6 @@ final class LiveDashboard: ObservableObject {
                 target: .memory
             )
         }
-        let now = Date().timeIntervalSince1970
         let current = ys.last ?? 0
         // Project to 95% used
         let target = 0.95
@@ -678,7 +751,6 @@ final class LiveDashboard: ObservableObject {
             color: mins < 30 ? Tokens.danger : mins < 120 ? Tokens.warn : Tokens.catApps,
             target: .memory
         )
-        _ = now    // silence unused-variable warning if we ever drop the projection
     }
 
     // MARK: - Timeline (last 24h)
@@ -768,9 +840,9 @@ final class LiveDashboard: ObservableObject {
         return events
     }
 
-    // MARK: - Briefing (template; Foundation Models added in Step 3)
+    // MARK: - Briefing
 
-    private func composeBriefing() -> String {
+    private func briefingFacts() -> [GroundedFact] {
         let g = score.grade
         let mem = LiveMemory.shared
         let bat = LiveBattery.shared
@@ -778,42 +850,36 @@ final class LiveDashboard: ObservableObject {
         let dups = LiveDuplicates.shared
         let st = LiveStartup.shared
 
-        var beats: [String] = []
-        // 1) Headline
+        var facts: [GroundedFact] = []
         switch g {
-        case .excellent: beats.append("Your Mac is in excellent shape.")
-        case .good:      beats.append("Your Mac looks good overall.")
-        case .fair:      beats.append("Your Mac is running fine, with a few things worth a glance.")
-        case .warn:      beats.append("A few subsystems need attention.")
-        case .critical:  beats.append("Several systems are struggling — review the items below.")
+        case .excellent: facts.append(.init(id: "health", text: "Your Mac is in excellent shape."))
+        case .good:      facts.append(.init(id: "health", text: "Your Mac looks good overall."))
+        case .fair:      facts.append(.init(id: "health", text: "Your Mac is running fine, with a few things worth a glance."))
+        case .warn:      facts.append(.init(id: "health", text: "A few subsystems need attention."))
+        case .critical:  facts.append(.init(id: "health", text: "Several systems are struggling — review the items below."))
         }
-        // 2) The strongest signal
         if let top = recommendations.first, top.priority >= 60 {
-            beats.append(top.title + ".")
+            facts.append(.init(id: "recommendation", text: top.title + "."))
         }
-        // 3) Memory or battery callout
         if mem.pressure != .normal {
-            beats.append("Memory pressure is \(mem.pressure.label.lowercased()) right now.")
+            facts.append(.init(id: "memory", text: "Memory pressure is \(mem.pressure.label.lowercased()) right now."))
         }
         if bat.hasBattery && bat.state == .discharging && bat.predictedDrainPctPerHour > 0 {
-            beats.append(String(format: "On battery, draining at %.1f%%/hr.", bat.predictedDrainPctPerHour))
+            facts.append(.init(id: "battery", text: String(format: "On battery, draining at %.1f%%/hr.", bat.predictedDrainPctPerHour)))
         }
-        // 4) Network color
-        if net.primary != nil && net.pingMs >= 0 {
-            if net.pingMs > 200 { beats.append("Network latency is high (\(Int(net.pingMs.rounded())) ms).") }
+        if net.primary != nil && net.pingMs > 200 {
+            facts.append(.init(id: "network", text: "Network latency is high (\(Int(net.pingMs.rounded())) ms)."))
         }
-        // 5) Recoverable disk
         if dups.totalRecoverable > 5_000_000_000 {
-            beats.append("\(dups.totalRecoverableText) is recoverable from duplicates.")
+            facts.append(.init(id: "duplicates", text: "Duplicate selections total \(dups.totalRecoverableText) for review."))
         }
         if st.unknownCount > 0 {
-            beats.append("\(st.unknownCount) startup item\(st.unknownCount > 1 ? "s are" : " is") from publishers we couldn't verify.")
+            facts.append(.init(id: "startup", text: "\(st.unknownCount) startup item\(st.unknownCount > 1 ? "s are" : " is") from publishers BloatMac couldn't verify."))
         }
-        let anomalies = computeAnomalies()
-        if !anomalies.isEmpty {
-            beats.append(anomalies.first!)
+        if let anomaly = computeAnomalies().first {
+            facts.append(.init(id: "anomaly", text: anomaly))
         }
-        return beats.joined(separator: " ")
+        return facts
     }
 
     // MARK: - Math
@@ -1010,6 +1076,7 @@ final class LiveDashboard: ObservableObject {
 
         // Storage trend (used GB over time → normalized to 0-1 as fraction of total)
         if storageHistory.count >= 2 {
+            let coverage = ObservationCoverage(timestamps: storageHistory.map(\.t))
             let lastTotal = storageHistory.last!.totalGB
             let bucketed = bucketize(storageHistory.map { $0.t },
                                      values: storageHistory.map { $0.usedGB / max(lastTotal, 1) },
@@ -1019,7 +1086,7 @@ final class LiveDashboard: ObservableObject {
                 label: "Storage", unit: "% used",
                 values: bucketed,
                 valueText: "\(Int((last * 100).rounded()))%",
-                detail: storageHistory.count >= 4 ? "Last 7 days" : "Recording…",
+                detail: coverage.summary,
                 color: last > 0.85 ? Tokens.danger : last > 0.7 ? Tokens.warn : Tokens.good,
                 target: .storage
             ))
@@ -1027,7 +1094,8 @@ final class LiveDashboard: ObservableObject {
 
         // Memory peak per hour
         let memSamples = LiveMemory.shared.history
-        if memSamples.count >= 8 {
+        let memoryCoverage = ObservationCoverage(timestamps: memSamples.map(\.t))
+        if memSamples.count >= 8, memoryCoverage.canPlot {
             let bucketed = bucketize(memSamples.map { $0.t },
                                      values: memSamples.map { Double($0.u) },
                                      buckets: 24, agg: .max)
@@ -1036,26 +1104,26 @@ final class LiveDashboard: ObservableObject {
                 label: "Memory peak", unit: "%",
                 values: bucketed,
                 valueText: "\(Int((peak * 100).rounded()))%",
-                detail: "Hourly highs",
+                detail: memoryCoverage.summary,
                 color: peak > 0.92 ? Tokens.danger : peak > 0.8 ? Tokens.warn : Tokens.good,
                 target: .memory
             ))
         }
 
-        // Network volume per hour (sum of bytes)
+        // Network throughput across the in-memory observation window.
         let netSamples = LiveNetwork.shared.samples
-        if netSamples.count >= 8 {
-            // sum (down+up) bytes per bucket
+        let networkCoverage = ObservationCoverage(timestamps: netSamples.map(\.t))
+        if netSamples.count >= 8, networkCoverage.canPlot {
             let bucketed = bucketize(netSamples.map { $0.t },
                                      values: netSamples.map { ($0.downBps + $0.upBps) },
-                                     buckets: 24, agg: .sum)
+                                     buckets: 24, agg: .mean)
             let mx = bucketed.max() ?? 1
             let normalized = bucketed.map { mx > 0 ? $0 / mx : 0 }
             out.append(.init(
-                label: "Network", unit: "throughput",
+                label: "Network", unit: "average throughput",
                 values: normalized,
                 valueText: LiveNetwork.bps(bucketed.last ?? 0),
-                detail: "Hourly volume",
+                detail: networkCoverage.summary,
                 color: Tokens.catApps,
                 target: .network
             ))
@@ -1064,6 +1132,7 @@ final class LiveDashboard: ObservableObject {
         // Battery health drift (max_capacity / design_capacity per snapshot)
         let healthSnaps = LiveBattery.shared.healthHistory
         if healthSnaps.count >= 2 {
+            let coverage = ObservationCoverage(timestamps: healthSnaps.map(\.t))
             let frac = healthSnaps.map { snap -> Double in
                 guard snap.designCapacity > 0 else { return 1 }
                 return Double(snap.maxCapacity) / Double(snap.designCapacity)
@@ -1074,7 +1143,7 @@ final class LiveDashboard: ObservableObject {
                 label: "Battery health", unit: "%",
                 values: bucketed,
                 valueText: "\(Int((last * 100).rounded()))%",
-                detail: "30-day drift",
+                detail: coverage.summary,
                 color: last < 0.8 ? Tokens.warn : Tokens.good,
                 target: .battery
             ))

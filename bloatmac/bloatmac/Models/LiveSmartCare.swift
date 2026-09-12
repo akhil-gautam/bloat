@@ -89,23 +89,35 @@ final class LiveSmartCare: ObservableObject {
     @Published private(set) var result: Result? = nil
     @Published private(set) var lastError: String? = nil
 
+    private var runGeneration = ScanGeneration()
+
     private init() {}
 
     /// Run the full sequence. Cooperatively cancellable via `cancel()`.
     func run() async {
         guard !running else { return }
+        let generation = runGeneration.next()
         running = true; lastError = nil; step = .idle; progress = 0
+        defer {
+            if runGeneration.accepts(generation) {
+                running = false
+                if Task.isCancelled {
+                    step = .idle
+                    progress = 0
+                }
+            }
+        }
 
         // Step 1 — Storage refresh. Cheap; just bumps publishers.
         step = .storage
         LiveStorage.shared.refresh()
-        await waitWhile { LiveStorage.shared.calculating }
+        guard await waitWhile({ LiveStorage.shared.calculating }, generation: generation) else { return }
         progress = 0.20
 
         // Step 2 — Downloads + caches scan.
         step = .caches
         LiveDownloadsCache.shared.scan()
-        await waitWhile { LiveDownloadsCache.shared.scanning }
+        guard await waitWhile({ LiveDownloadsCache.shared.scanning }, generation: generation) else { return }
         progress = 0.50
 
         // Step 3 — Duplicates scan. This is the slow one (hashing). Smart Care
@@ -113,16 +125,13 @@ final class LiveSmartCare: ObservableObject {
         // window — the scanner caps results internally.
         step = .duplicates
         LiveDuplicates.shared.scan()
-        await waitWhile { LiveDuplicates.shared.scanning }
-        // Auto-mark duplicates beyond the newest copy as not-kept so our
-        // cleanable estimate matches what `resolveAll()` would actually trash.
-        LiveDuplicates.shared.smartPick()
+        guard await waitWhile({ LiveDuplicates.shared.scanning }, generation: generation) else { return }
         progress = 0.80
 
         // Step 4 — Startup item rescan.
         step = .startup
         LiveStartup.shared.rescan()
-        await waitWhile { LiveStartup.shared.scanning }
+        guard await waitWhile({ LiveStartup.shared.scanning }, generation: generation) else { return }
         progress = 0.95
 
         // Step 5 — Memory pressure read (LiveMemory ticks itself; just snapshot).
@@ -131,12 +140,13 @@ final class LiveSmartCare: ObservableObject {
 
         result = computeResult()
         step = .done
-        running = false
     }
 
     func cancel() {
+        _ = runGeneration.next()
         LiveDownloadsCache.shared.cancel()
         LiveDuplicates.shared.cancel()
+        LiveStartup.shared.cancel()
         running = false
         step = .idle
         progress = 0
@@ -144,25 +154,34 @@ final class LiveSmartCare: ObservableObject {
 
     // MARK: - Helpers
 
-    private func waitWhile(_ predicate: @escaping () -> Bool) async {
+    private func waitWhile(_ predicate: @escaping () -> Bool, generation: Int) async -> Bool {
         // Poll at 250ms — the scans tick their own progress publishers,
         // we just need to know when they've fully settled.
+        guard !Task.isCancelled, runGeneration.accepts(generation) else { return false }
         while predicate() {
-            try? await Task.sleep(nanoseconds: 250_000_000)
-            if Task.isCancelled { return }
+            do {
+                try await Task.sleep(nanoseconds: 250_000_000)
+            } catch {
+                return false
+            }
+            if Task.isCancelled || !runGeneration.accepts(generation) { return false }
         }
+        return !Task.isCancelled && runGeneration.accepts(generation)
     }
 
     private func computeResult() -> Result {
         let dc = LiveDownloadsCache.shared
-        let downloads: Int64 = dc.downloads.reduce(0) { $0 + $1.sizeBytes }
-        let caches: Int64 = dc.caches.reduce(0) { $0 + $1.sizeBytes }
+        let oldDownloads = dc.downloads.filter { $0.ageDays >= 30 }
+        let safeCaches = dc.caches.filter(\.safeToClean)
+        let downloads: Int64 = oldDownloads.reduce(0) { $0 + $1.sizeBytes }
+        let caches: Int64 = safeCaches.reduce(0) { $0 + $1.sizeBytes }
 
         let dup = LiveDuplicates.shared
-        let dupBytes: Int64 = (dup.exact + dup.similar).reduce(Int64(0)) { acc, group in
-            // After smartPick(), keep == false items are slated for trash.
-            acc + group.items.reduce(Int64(0)) { $0 + ($1.keep ? 0 : $1.sizeBytes) }
-        }
+        let countedRoots = oldDownloads.map(\.url) + safeCaches.map(\.url)
+        let countedDuplicateURLs = Set(dup.exact.flatMap(\.items).compactMap { item in
+            CleanupSafety.isSameOrDescendant(item.url, of: countedRoots) ? item.url : nil
+        })
+        let dupBytes = dup.exactPotentialRecoverable(excluding: countedDuplicateURLs)
 
         let stor = LiveStorage.shared
         let pct = stor.totalGB > 0 ? stor.usedGB / stor.totalGB : 0
@@ -185,7 +204,7 @@ final class LiveSmartCare: ObservableObject {
         if caches >= 200_000_000 {
             recs.append(.init(
                 title: "Empty app caches",
-                detail: "\(formatBytes(caches)) reclaimable across \(dc.caches.count) apps",
+                detail: "\(formatBytes(caches)) safe to review across \(safeCaches.count) apps",
                 actionLabel: "Open Caches",
                 module: .caches,
                 bytes: caches
@@ -194,7 +213,7 @@ final class LiveSmartCare: ObservableObject {
         if downloads >= 200_000_000 {
             recs.append(.init(
                 title: "Clear old downloads",
-                detail: "\(formatBytes(downloads)) sitting in ~/Downloads",
+                detail: "\(formatBytes(downloads)) older than 30 days in ~/Downloads",
                 actionLabel: "Open Downloads",
                 module: .downloads,
                 bytes: downloads
@@ -203,7 +222,7 @@ final class LiveSmartCare: ObservableObject {
         if dupBytes >= 100_000_000 {
             recs.append(.init(
                 title: "Resolve duplicates",
-                detail: "\(formatBytes(dupBytes)) duplicated across \(dup.exact.count + dup.similar.count) groups",
+                detail: "\(formatBytes(dupBytes)) across \(dup.exact.count) verified exact groups",
                 actionLabel: "Open Duplicates",
                 module: .duplicates,
                 bytes: dupBytes

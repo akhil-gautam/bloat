@@ -71,18 +71,14 @@ struct Pill: View {
 struct AppSwitch: View {
     @Binding var on: Bool
     var body: some View {
-        ZStack(alignment: on ? .trailing : .leading) {
-            Capsule().fill(on ? Tokens.good : Tokens.borderStrong)
-            Circle().fill(.white).padding(2).shadow(color: .black.opacity(0.2), radius: 1.5, y: 1)
-        }
-        .frame(width: 36, height: 22)
-        .onTapGesture { withAnimation(.spring(response: 0.25)) { on.toggle() } }
+        Toggle("Enabled", isOn: $on).toggleStyle(.switch).labelsHidden()
     }
 }
 
 // MARK: - Checkbox
 struct AppCheckbox: View {
     let on: Bool
+    var label: String = "Select item"
     @EnvironmentObject var state: AppState
     var body: some View {
         ZStack {
@@ -95,6 +91,9 @@ struct AppCheckbox: View {
             }
         }
         .frame(width: 14, height: 14)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
+        .accessibilityValue(on ? "Selected" : "Not selected")
     }
 }
 

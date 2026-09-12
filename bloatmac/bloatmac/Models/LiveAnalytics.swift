@@ -131,10 +131,19 @@ final class LiveAnalytics: ObservableObject {
     @Published private(set) var totalActiveHours: Double = 0
 
     @Published private(set) var summary: String = ""
-    @Published private(set) var summaryAuthor: String = ""
+    @Published private(set) var intelligenceStatus: IntelligenceStatus = .rules
+    @Published private(set) var observedCoverage: String = "no samples"
 
     private var cancellables = Set<AnyCancellable>()
     private var refreshTask: Task<Void, Never>? = nil
+    private var intelligenceTask: Task<Void, Never>?
+    private var refreshGeneration = 0
+    private var intelligenceGeneration = 0
+    private var currentIntelligenceFingerprint = ""
+    private var activeIntelligenceFingerprint: String?
+    private var completedIntelligenceFingerprint: String?
+    private var lastIntelligenceAttempt: Date?
+    private var lastIntelligenceAttemptFingerprint: String?
 
     private init() {
         // Recompute (debounced) when any input changes.
@@ -149,20 +158,32 @@ final class LiveAnalytics: ObservableObject {
     func start() {
         if records.isEmpty { recompute() }
     }
-    func stop() { refreshTask?.cancel(); refreshTask = nil }
+    func stop() {
+        refreshTask?.cancel(); refreshTask = nil
+        intelligenceTask?.cancel(); intelligenceTask = nil
+        activeIntelligenceFingerprint = nil
+        refreshGeneration &+= 1
+        intelligenceGeneration &+= 1
+    }
 
     func refresh() { recompute() }
 
     private func recompute() {
         refreshTask?.cancel()
+        intelligenceTask?.cancel(); intelligenceTask = nil
+        activeIntelligenceFingerprint = nil
+        refreshGeneration &+= 1
+        intelligenceGeneration &+= 1
+        let generation = refreshGeneration
         loading = true
         let r = range
         let primary = primaryMetric
         let secondary = secondaryMetric
         refreshTask = Task.detached(priority: .userInitiated) { [weak self] in
             let snap = AnalyticsCompute.run(range: r, primary: primary, secondary: secondary)
+            guard !Task.isCancelled else { return }
             await MainActor.run {
-                guard let self else { return }
+                guard let self, generation == self.refreshGeneration else { return }
                 self.primarySeries     = snap.primarySeries
                 self.secondarySeries   = snap.secondarySeries
                 self.heatmaps          = snap.heatmaps
@@ -174,37 +195,107 @@ final class LiveAnalytics: ObservableObject {
                 self.sessions          = snap.sessions
                 self.totalActiveHours  = snap.totalActiveHours
                 self.summary           = snap.summary
-                self.summaryAuthor     = "Heuristic"
+                self.observedCoverage  = snap.coverage.summary
+                let fingerprint = IntelligencePolicy.fingerprint(for: snap.intelligenceFacts)
+                self.currentIntelligenceFingerprint = fingerprint
+                if self.completedIntelligenceFingerprint != fingerprint {
+                    if self.lastIntelligenceAttemptFingerprint == fingerprint,
+                       case .failed = self.intelligenceStatus {
+                        // Keep the failure visible until the cooldown permits another attempt.
+                    } else {
+                        self.intelligenceStatus = .rules
+                    }
+                }
                 self.lastRefresh       = Date()
                 self.loading           = false
-                self.upgradeSummaryWithAppleIntelligence(facts: snap.factSheet)
+                self.upgradeSummaryWithAppleIntelligence(
+                    facts: snap.intelligenceFacts,
+                    fallback: snap.summary,
+                    fingerprint: fingerprint
+                )
             }
         }
     }
 
-    private func upgradeSummaryWithAppleIntelligence(facts: String) {
+    private func upgradeSummaryWithAppleIntelligence(
+        facts: [GroundedFact],
+        fallback: String,
+        fingerprint: String
+    ) {
         #if canImport(FoundationModels)
         if #available(macOS 26.0, *) {
-            guard SystemLanguageModel.default.isAvailable else { return }
-            Task { @MainActor in
+            let model = SystemLanguageModel.default
+            if let reason = IntelligencePolicy.unavailableReason(for: model) {
+                intelligenceStatus = .unavailable(reason)
+                return
+            }
+            let now = Date()
+            guard IntelligencePolicy.shouldStart(
+                fingerprint: fingerprint,
+                activeFingerprint: activeIntelligenceFingerprint,
+                completedFingerprint: completedIntelligenceFingerprint,
+                lastAttempt: lastIntelligenceAttemptFingerprint == fingerprint ? lastIntelligenceAttempt : nil,
+                now: now
+            ) else { return }
+            intelligenceGeneration &+= 1
+            let generation = intelligenceGeneration
+            activeIntelligenceFingerprint = fingerprint
+            lastIntelligenceAttempt = now
+            lastIntelligenceAttemptFingerprint = fingerprint
+            intelligenceStatus = .generating
+            let prompt = "Rank the supplied measured facts by importance. Return only their IDs.\n" +
+                facts.map { "\($0.id): \($0.text)" }.joined(separator: "\n")
+            intelligenceTask = Task { @MainActor [weak self] in
                 do {
                     let session = LanguageModelSession(instructions: """
                         You are the analytics narrator inside a macOS utility app called BloatMac.
-                        Write a 3-4 sentence longitudinal summary in plain English from the supplied facts only.
-                        Lead with the most important finding. Mention concrete numbers from the facts. \
-                        Do not invent data. No bullet points, no markdown, no headings.
+                        Select the most important supplied fact IDs. Never create IDs or prose.
                     """)
-                    let response = try await session.respond(to: facts)
-                    let text = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !text.isEmpty {
-                        withAnimation(.easeOut(duration: 0.35)) {
-                            self.summary = text
-                            self.summaryAuthor = "Apple Intelligence"
-                        }
+                    let schema = try IntelligencePolicy.rankingSchema(for: facts)
+                    let response = try await session.respond(
+                        to: prompt,
+                        schema: schema,
+                        options: GenerationOptions(sampling: .greedy)
+                    )
+                    guard !Task.isCancelled, let self,
+                          IntelligencePolicy.accepts(
+                            generation: generation,
+                            currentGeneration: self.intelligenceGeneration,
+                            fingerprint: fingerprint,
+                            currentFingerprint: self.currentIntelligenceFingerprint
+                          ) else { return }
+                    let returnedIDs = try response.content.value([String].self, forProperty: "factIDs")
+                    let selectedIDs = IntelligencePolicy.acceptedIDs(returnedIDs, facts: facts)
+                    let text = IntelligencePolicy.groundedText(
+                        selectedIDs: selectedIDs,
+                        facts: facts,
+                        fallback: fallback
+                    )
+                    withAnimation(.easeOut(duration: 0.35)) {
+                        self.summary = text
+                        self.intelligenceStatus = selectedIDs.isEmpty ? .rules : .generated
                     }
-                } catch { /* keep heuristic */ }
+                    self.completedIntelligenceFingerprint = fingerprint
+                    self.activeIntelligenceFingerprint = nil
+                    self.intelligenceTask = nil
+                } catch is CancellationError {
+                    return
+                } catch {
+                    guard let self,
+                          IntelligencePolicy.accepts(
+                            generation: generation,
+                            currentGeneration: self.intelligenceGeneration,
+                            fingerprint: fingerprint,
+                            currentFingerprint: self.currentIntelligenceFingerprint
+                          ) else { return }
+                    self.activeIntelligenceFingerprint = nil
+                    self.intelligenceTask = nil
+                    self.intelligenceStatus = .failed("Apple Intelligence could not rank the current facts. BloatMac kept the measured summary; refresh to retry.")
+                }
             }
         }
+        #else
+        intelligenceStatus = .unavailable("Apple Intelligence is unavailable in this build. BloatMac is showing measured rules.")
         #endif
     }
 
@@ -246,40 +337,53 @@ private enum AnalyticsCompute {
         var sessions: [SessionDay] = []
         var totalActiveHours: Double = 0
         var summary: String = ""
-        var factSheet: String = ""
+        var intelligenceFacts: [GroundedFact] = []
+        var coverage = ObservationCoverage(timestamps: [])
     }
 
     static func run(range: AnalyticsRange, primary: AnalyticsMetric, secondary: AnalyticsMetric) -> Snapshot {
         var snap = Snapshot()
         let now = Date().timeIntervalSince1970
         let cutoff = range.seconds.map { now - $0 } ?? 0
+        let readCutoff = range.seconds.map { now - 2 * $0 } ?? 0
 
-        // Pull samples for the range from each store
-        let memSamples = readMemoryJSON(since: cutoff)
-        let netSamples = readNetSQLite(since: cutoff)
-        let batSamples = readBatterySamples(since: cutoff)
-        let storSamples = readStorageSamples(since: cutoff)
+        // Read one preceding window as well, then keep displayed data scoped to the selected window.
+        let allMemSamples = readMemoryJSON(since: readCutoff)
+        let allNetSamples = readNetSQLite(since: readCutoff)
+        let allBatSamples = readBatterySamples(since: readCutoff)
+        let allStorSamples = readStorageSamples(since: readCutoff)
+        let memSamples = allMemSamples.filter { $0.t >= cutoff }
+        let netSamples = allNetSamples.filter { $0.t >= cutoff }
+        let batSamples = allBatSamples.filter { $0.t >= cutoff }
+        let storSamples = allStorSamples.filter { $0.t >= cutoff }
+        let previousMem = allMemSamples.filter { $0.t < cutoff }
+        let previousNet = allNetSamples.filter { $0.t < cutoff }
+        let previousStor = allStorSamples.filter { $0.t < cutoff }
         let cleanupRows = CleanupLog.read(since: cutoff)
 
         snap.primarySeries   = makeSeries(primary,   memSamples: memSamples, netSamples: netSamples, storSamples: storSamples, points: 240)
         snap.secondarySeries = makeSeries(secondary, memSamples: memSamples, netSamples: netSamples, storSamples: storSamples, points: 240)
 
-        snap.heatmaps = [
-            heatmapMemory(memSamples),
-            heatmapNetwork(netSamples),
-            heatmapCharging(batSamples)
-        ]
-
-        snap.histograms = [
-            histMemory(memSamples),
-            histLatency(netSamples),
-            histDailyDownload(netSamples)
-        ]
+        if ObservationCoverage(timestamps: memSamples.map(\.t)).canPlot {
+            snap.heatmaps.append(heatmapMemory(memSamples))
+            snap.histograms.append(histMemory(memSamples))
+        }
+        if ObservationCoverage(timestamps: netSamples.map(\.t)).canPlot {
+            snap.heatmaps.append(heatmapNetwork(netSamples))
+            snap.histograms.append(histLatency(netSamples))
+            snap.histograms.append(histDailyDownload(netSamples))
+        }
+        if ObservationCoverage(timestamps: batSamples.map(\.t)).canPlot {
+            snap.heatmaps.append(heatmapCharging(batSamples))
+        }
 
         snap.records = computeRecords(memSamples: memSamples, netSamples: netSamples,
                                       batSamples: batSamples, cleanupRows: cleanupRows)
-        snap.deltas  = computeDeltas(range: range, memSamples: memSamples, netSamples: netSamples,
-                                     batSamples: batSamples, storSamples: storSamples)
+        snap.deltas = computeDeltas(
+            memSamples: memSamples, previousMem: previousMem,
+            netSamples: netSamples, previousNet: previousNet,
+            storSamples: storSamples, previousStor: previousStor
+        )
 
         let cleanups = bucketCleanups(cleanupRows)
         snap.cleanupHistory    = cleanups
@@ -289,11 +393,14 @@ private enum AnalyticsCompute {
         snap.sessions = sessions
         snap.totalActiveHours = Double(sessions.reduce(0) { $0 + $1.activeMinutes }) / 60.0
 
+        snap.coverage = ObservationCoverage(timestamps:
+            memSamples.map(\.t) + netSamples.map(\.t) + batSamples.map(\.t) + storSamples.map(\.t)
+        )
         let composed = composeSummaryAndFacts(range: range, snap: snap,
                                               memCount: memSamples.count, netCount: netSamples.count,
                                               batCount: batSamples.count, storCount: storSamples.count)
         snap.summary   = composed.summary
-        snap.factSheet = composed.facts
+        snap.intelligenceFacts = composed.facts
         return snap
     }
 
@@ -393,20 +500,20 @@ private enum AnalyticsCompute {
         let xs: [Double], ys: [Double]
         switch metric {
         case .memoryUsed:
-            guard !memSamples.isEmpty else { return nil }
+            guard ObservationCoverage(timestamps: memSamples.map(\.t)).canPlot else { return nil }
             xs = memSamples.map { $0.t }; ys = memSamples.map { Double($0.u) }
         case .downBps:
-            guard !netSamples.isEmpty else { return nil }
+            guard ObservationCoverage(timestamps: netSamples.map(\.t)).canPlot else { return nil }
             xs = netSamples.map { $0.t }; ys = netSamples.map { $0.downBps }
         case .upBps:
-            guard !netSamples.isEmpty else { return nil }
+            guard ObservationCoverage(timestamps: netSamples.map(\.t)).canPlot else { return nil }
             xs = netSamples.map { $0.t }; ys = netSamples.map { $0.upBps }
         case .ping:
             let filtered = netSamples.filter { $0.pingMs >= 0 }
-            guard !filtered.isEmpty else { return nil }
+            guard ObservationCoverage(timestamps: filtered.map(\.t)).canPlot else { return nil }
             xs = filtered.map { $0.t }; ys = filtered.map { $0.pingMs }
         case .diskUsed:
-            guard !storSamples.isEmpty else { return nil }
+            guard ObservationCoverage(timestamps: storSamples.map(\.t)).canPlot else { return nil }
             xs = storSamples.map { $0.t }
             ys = storSamples.map { $0.totalGB > 0 ? $0.usedGB / $0.totalGB : 0 }
         }
@@ -480,18 +587,25 @@ private enum AnalyticsCompute {
 
     private static func heatmapNetwork(_ samples: [NetSample]) -> Heatmap {
         var grid = Array(repeating: Array(repeating: 0.0, count: 24), count: 7)
+        var counts = Array(repeating: Array(repeating: 0, count: 24), count: 7)
         let cal = Calendar(identifier: .gregorian)
         for s in samples {
             let d = Date(timeIntervalSince1970: s.t)
             let dow = (cal.component(.weekday, from: d) + 5) % 7
             let hr  = cal.component(.hour, from: d)
             grid[dow][hr] += s.downBps + s.upBps
+            counts[dow][hr] += 1
+        }
+        for day in 0..<7 {
+            for hour in 0..<24 where counts[day][hour] > 0 {
+                grid[day][hour] /= Double(counts[day][hour])
+            }
         }
         var peak = 0.0
         for d in 0..<7 { for h in 0..<24 { peak = max(peak, grid[d][h]) }}
         return Heatmap(label: "Network throughput", cells: grid,
                        peakValue: peak,
-                       peakLabel: peak > 0 ? "Peak \(Int(peak / 1_000_000)) MB/h sum" : "—",
+                       peakLabel: peak > 0 ? "Peak average \(LiveNetwork.bps(peak))" : "—",
                        color: Tokens.good)
     }
 
@@ -543,12 +657,13 @@ private enum AnalyticsCompute {
     }
 
     private static func histDailyDownload(_ samples: [NetSample]) -> Histogram {
-        // Group by day, compute total bytes (sum of bps × dt approximated as 3s sample)
         let cal = Calendar(identifier: .gregorian)
         var perDay: [Date: Double] = [:]
-        for s in samples {
-            let day = cal.startOfDay(for: Date(timeIntervalSince1970: s.t))
-            perDay[day, default: 0] += s.downBps * 3.0      // 3s sample interval
+        for index in 1..<samples.count {
+            let previous = samples[index - 1]
+            let elapsed = min(max(samples[index].t - previous.t, 0), 60)
+            let day = cal.startOfDay(for: Date(timeIntervalSince1970: previous.t))
+            perDay[day, default: 0] += previous.downBps * elapsed
         }
         let edges: [Double] = [0, 100_000_000, 1_000_000_000, 5_000_000_000, 20_000_000_000, .infinity]
         let labels = ["<100MB", "100MB-1GB", "1-5 GB", "5-20 GB", "20 GB+"]
@@ -631,31 +746,22 @@ private enum AnalyticsCompute {
         return f.localizedString(for: Date(timeIntervalSince1970: t), relativeTo: Date())
     }
 
-    // MARK: Week-over-week deltas
+    // MARK: Prior-window comparisons
 
-    private static func computeDeltas(range: AnalyticsRange,
-                                      memSamples: [MemorySample], netSamples: [NetSample],
-                                      batSamples: [BatteryReading], storSamples: [StorageSample]) -> [WoWDelta] {
-        let span = range.seconds ?? 30 * 86400
-        let now = Date().timeIntervalSince1970
-        let mid = now - span / 2
-
-        func split<T>(_ items: [T], time: (T) -> TimeInterval) -> ([T], [T]) {
-            var a: [T] = [], b: [T] = []
-            for x in items { (time(x) < mid ? { a.append(x) } : { b.append(x) })() }
-            return (a, b)
-        }
+    private static func computeDeltas(
+        memSamples: [MemorySample], previousMem: [MemorySample],
+        netSamples: [NetSample], previousNet: [NetSample],
+        storSamples: [StorageSample], previousStor: [StorageSample]
+    ) -> [WoWDelta] {
         var out: [WoWDelta] = []
 
-        // Memory peak
-        let (mA, mB) = split(memSamples) { $0.t }
-        let pA = mA.map { Double($0.u) }.max() ?? 0
-        let pB = mB.map { Double($0.u) }.max() ?? 0
-        if pA > 0 || pB > 0 {
-            let delta = (pB - pA) * 100
+        if ObservationCoverage.canCompare(previous: previousMem.map(\.t), current: memSamples.map(\.t)),
+           let priorPeak = previousMem.map({ Double($0.u) }).max(),
+           let currentPeak = memSamples.map({ Double($0.u) }).max() {
+            let delta = (currentPeak - priorPeak) * 100
             out.append(.init(
-                label: "Memory peak", value: "\(Int((pB * 100).rounded()))%",
-                deltaText: String(format: "%+.1fpp vs prior", delta),
+                label: "Memory peak", value: "\(Int((currentPeak * 100).rounded()))%",
+                deltaText: String(format: "%+.1f pp vs prior window", delta),
                 deltaPositiveIsBad: true,
                 positive: delta >= 0,
                 icon: "memorychip",
@@ -663,47 +769,30 @@ private enum AnalyticsCompute {
                 target: .memory
             ))
         }
-        // Network total bytes
-        let (nA, nB) = split(netSamples) { $0.t }
-        let totA = nA.reduce(0.0) { $0 + ($1.downBps + $1.upBps) * 3 }
-        let totB = nB.reduce(0.0) { $0 + ($1.downBps + $1.upBps) * 3 }
-        if totA + totB > 0 {
-            let pct = totA > 0 ? (totB - totA) / totA * 100 : 0
+
+        if ObservationCoverage.canCompare(previous: previousNet.map(\.t), current: netSamples.map(\.t)) {
+            let priorBytes = estimatedNetworkBytes(previousNet)
+            let currentBytes = estimatedNetworkBytes(netSamples)
+            let pct = priorBytes > 0 ? (currentBytes - priorBytes) / priorBytes * 100 : nil
             out.append(.init(
                 label: "Network volume",
-                value: ByteCountFormatter.string(fromByteCount: Int64(totB), countStyle: .file),
-                deltaText: pct == 0 ? "—" : String(format: "%+.0f%% vs prior", pct),
+                value: ByteCountFormatter.string(fromByteCount: Int64(currentBytes), countStyle: .file),
+                deltaText: pct.map { String(format: "%+.0f%% vs prior window", $0) } ?? "Prior window had no traffic",
                 deltaPositiveIsBad: false,
-                positive: pct >= 0,
+                positive: (pct ?? 0) >= 0,
                 icon: "arrow.down",
                 color: Tokens.catApps,
                 target: .network
             ))
         }
-        // Battery cycles delta
-        if !batSamples.isEmpty {
-            // No per-sample cycle in batSamples (cycles are in the health table). Use first/last percent state instead.
-            // Approximate by counting charge starts.
-            var chargeStarts = 0
-            for i in 1..<batSamples.count {
-                if batSamples[i-1].charging != 1 && batSamples[i].charging == 1 { chargeStarts += 1 }
-            }
+
+        if ObservationCoverage.canCompare(previous: previousStor.map(\.t), current: storSamples.map(\.t)),
+           let priorLast = previousStor.last,
+           let currentLast = storSamples.last {
+            let delta = currentLast.usedGB - priorLast.usedGB
             out.append(.init(
-                label: "Charge cycles", value: "\(chargeStarts) starts",
-                deltaText: "in this window",
-                deltaPositiveIsBad: false,
-                positive: true,
-                icon: "bolt.badge.clock",
-                color: Tokens.good,
-                target: .battery
-            ))
-        }
-        // Disk used GB delta
-        if let aFirst = storSamples.first, let aLast = storSamples.last, aLast.t > aFirst.t {
-            let delta = aLast.usedGB - aFirst.usedGB
-            out.append(.init(
-                label: "Disk used", value: String(format: "%.0f GB", aLast.usedGB),
-                deltaText: String(format: "%+.1f GB", delta),
+                label: "Disk used", value: String(format: "%.0f GB", currentLast.usedGB),
+                deltaText: String(format: "%+.1f GB vs prior window", delta),
                 deltaPositiveIsBad: true,
                 positive: delta >= 0,
                 icon: "internaldrive",
@@ -712,6 +801,16 @@ private enum AnalyticsCompute {
             ))
         }
         return out
+    }
+
+    private static func estimatedNetworkBytes(_ samples: [NetSample]) -> Double {
+        guard samples.count >= 2 else { return 0 }
+        var total = 0.0
+        for index in 1..<samples.count {
+            let elapsed = min(max(samples[index].t - samples[index - 1].t, 0), 60)
+            total += (samples[index - 1].downBps + samples[index - 1].upBps) * elapsed
+        }
+        return total
     }
 
     // MARK: Cleanups
@@ -769,49 +868,44 @@ private enum AnalyticsCompute {
 
     private static func composeSummaryAndFacts(range: AnalyticsRange, snap: Snapshot,
                                                memCount: Int, netCount: Int, batCount: Int, storCount: Int)
-    -> (summary: String, facts: String) {
-        var beats: [String] = []
-
+    -> (summary: String, facts: [GroundedFact]) {
         if memCount + netCount + batCount + storCount == 0 {
             return ("Not enough data to summarize this window yet — let BloatMac collect samples for a while.",
-                    "Range: \(range.label)\nNo samples available.")
+                    [])
         }
 
-        beats.append("Over the last \(range.label.lowercased()), BloatMac sampled \(memCount) memory, \(netCount) network, \(batCount) battery, and \(storCount) storage data points.")
+        var facts = [GroundedFact(
+            id: "coverage",
+            text: "In the selected \(range.label) view, BloatMac has \(snap.coverage.summary) of observations."
+        )]
 
-        if let peakMem = snap.records.first(where: { $0.label == "Peak memory used" }) {
-            beats.append("\(peakMem.label) hit \(peakMem.value) (\(peakMem.detail)).")
+        for (index, record) in snap.records.enumerated() {
+            facts.append(.init(
+                id: "record-\(index)",
+                text: "\(record.label) was \(record.value) (\(record.detail))."
+            ))
         }
         if snap.totalCleanedBytes > 0 {
-            beats.append("\(ByteCountFormatter.string(fromByteCount: snap.totalCleanedBytes, countStyle: .file)) cleared via BloatMac in this window.")
+            facts.append(.init(
+                id: "trash",
+                text: "BloatMac moved \(ByteCountFormatter.string(fromByteCount: snap.totalCleanedBytes, countStyle: .file)) to Trash in this selected window."
+            ))
         }
-        if let diskDelta = snap.deltas.first(where: { $0.label == "Disk used" }) {
-            beats.append("Disk: \(diskDelta.value) (\(diskDelta.deltaText)).")
+        for (index, delta) in snap.deltas.enumerated() {
+            facts.append(.init(
+                id: "comparison-\(index)",
+                text: "\(delta.label) was \(delta.value), \(delta.deltaText)."
+            ))
         }
         if snap.totalActiveHours > 0 {
-            beats.append(String(format: "%.1f active hours across %d sessions.", snap.totalActiveHours, snap.sessions.reduce(0) { $0 + $1.sessionCount }))
+            facts.append(.init(
+                id: "activity",
+                text: String(format: "Observed activity totals %.1f hours across %d sessions in this selected window.",
+                             snap.totalActiveHours, snap.sessions.reduce(0) { $0 + $1.sessionCount })
+            ))
         }
 
-        let summary = beats.joined(separator: " ")
-
-        // Build a richer fact sheet for the LLM
-        var facts: [String] = []
-        facts.append("Range: \(range.label)")
-        facts.append("Sample counts → memory:\(memCount), network:\(netCount), battery:\(batCount), storage:\(storCount)")
-        for r in snap.records {
-            facts.append("Record · \(r.label): \(r.value) (\(r.detail))")
-        }
-        for d in snap.deltas {
-            facts.append("Delta · \(d.label): \(d.value) [\(d.deltaText)]")
-        }
-        if snap.totalCleanedBytes > 0 {
-            let modules = Set(snap.cleanupHistory.flatMap { $0.perModule.keys.map { $0.label } })
-            facts.append("Cleanups · total \(ByteCountFormatter.string(fromByteCount: snap.totalCleanedBytes, countStyle: .file)) across [\(modules.sorted().joined(separator: ", "))]")
-        }
-        facts.append(String(format: "Sessions · count %d, active hours %.1f",
-                            snap.sessions.reduce(0) { $0 + $1.sessionCount }, snap.totalActiveHours))
-
-        return (summary, "Facts:\n" + facts.joined(separator: "\n"))
+        return (facts.prefix(4).map(\.text).joined(separator: " "), facts)
     }
 
     // MARK: Export

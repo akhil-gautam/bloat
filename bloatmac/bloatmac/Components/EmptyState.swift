@@ -1,5 +1,20 @@
 import SwiftUI
 
+struct ActionError: View {
+    let message: String?
+    var body: some View {
+        if let message, !message.isEmpty {
+            Label(message, systemImage: "exclamationmark.triangle")
+                .font(.system(size: 12)).foregroundStyle(Tokens.text)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+                .background(Tokens.warn.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                .accessibilityLabel("Action needs attention: \(message)")
+        }
+    }
+}
+
 struct EmptyState: View {
     let icon: String
     let title: String

@@ -51,6 +51,14 @@ jobs:
           VERSION="${TAG_NAME#bloatmac-v}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
+      - name: Run Swift regression checks
+        working-directory: ${{ github.workspace }}
+        run: sh bloatmac/Checks/run.sh
+
+      - name: Check shell installer
+        working-directory: ${{ github.workspace }}
+        run: bash checks/installer_check.sh
+
       - name: Detect signing configuration
         id: signing
         working-directory: ${{ github.workspace }}

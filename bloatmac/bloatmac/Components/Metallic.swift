@@ -24,19 +24,12 @@ struct MetallicCard: ViewModifier {
     @State private var size: CGSize = .zero
 
     func body(content: Content) -> some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: false)) { ctx in
-            // Ambient pan on idle: a slow Lissajous around the center.
-            let t = ctx.date.timeIntervalSinceReferenceDate
-            let idle = CGPoint(
-                x: 0.5 + (reduceMotion ? 0 : 0.06 * sin(t / 4.0)),
-                y: 0.5 + (reduceMotion ? 0 : 0.06 * cos(t / 5.5))
-            )
-            let p = hover ? animated : idle
+        Group {
+            // Static at rest: monitoring cards do not need a perpetual display timer.
+            let p = hover && !reduceMotion ? animated : CGPoint(x: 0.5, y: 0.5)
 
             let dx = p.x - 0.5
             let dy = p.y - 0.5
-            let edgeness = min(1, max(abs(dx), abs(dy)) * 2)        // 0 at center, 1 at edge — Fresnel proxy
-            let specOpacity = (hover ? 0.10 : 0.04) + 0.14 * edgeness
             let tilt = reduceMotion ? 0.0 : 6.0
             let tiltX = -dy * tilt
             let tiltY = dx * tilt
@@ -73,12 +66,12 @@ struct MetallicCard: ViewModifier {
                 )
                 pointer = normalized
                 if !hover { hover = true }
-                withAnimation(.interpolatingSpring(stiffness: 200, damping: 24)) {
+                withAnimation(reduceMotion ? nil : .interpolatingSpring(stiffness: 200, damping: 24)) {
                     animated = normalized
                 }
             case .ended:
                 hover = false
-                withAnimation(.easeOut(duration: 0.32)) {
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.32)) {
                     animated = .init(x: 0.5, y: 0.5)
                 }
             }

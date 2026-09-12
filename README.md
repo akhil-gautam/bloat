@@ -17,10 +17,10 @@ Both are real-detection tools — every module reads actual disk / system state,
 
 # BloatMac — macOS app
 
-Native SwiftUI cleanup + maintenance app. **19 screens.** CleanMyMac-class feature surface, no subscription.
+Native SwiftUI cleanup + maintenance app. **23 screens.** CleanMyMac-class feature surface, no subscription.
 
 **Storage**
-- Smart Care · one-click scan + apply
+- Smart Care · scan and review recommendations
 - Storage treemap · Large files · Duplicates (exact + visually-similar via Vision)
 - Unused & old · Downloads & cache
 - Uninstaller (full leftover sweep) · Updater (Homebrew · MAS · Sparkle)
@@ -47,11 +47,21 @@ Native SwiftUI cleanup + maintenance app. **19 screens.** CleanMyMac-class featu
 brew install --cask akhil-gautam/tap/bloatmac
 ```
 
+Upgrade an existing installation with `brew update && brew upgrade --cask bloatmac`.
+
+Without Homebrew:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/akhil-gautam/bloat/main/install.sh | bash -s -- --app
+```
+
+The shell installer verifies the release checksum and Apple's app signature before installing.
+
 Or grab the `.dmg` from the [releases page](https://github.com/akhil-gautam/bloat/releases) (tags starting with `bloatmac-v…`).
 
 Releases are **Developer ID signed and Apple-notarized** — Gatekeeper opens cleanly, no quarantine workaround.
 
-Requires macOS 26 (Tahoe). The dashboard's AI briefing uses Foundation Models on macOS 26+ and falls back to a deterministic heuristic on older releases.
+Requires macOS 26.2 (Tahoe). Dashboard and Analytics use Foundation Models to rank measured facts when Apple Intelligence is available, with deterministic summaries when it is unavailable.
 
 See [`bloatmac/README.md`](bloatmac/README.md) for the full module list, project layout, and roadmap.
 

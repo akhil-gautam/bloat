@@ -53,6 +53,7 @@ final class LiveUnused: ObservableObject {
     }
 
     private var task: Task<Void, Never>? = nil
+    private var scanGeneration = ScanGeneration()
 
     private init() {}
 
@@ -62,36 +63,36 @@ final class LiveUnused: ObservableObject {
 
     func scan() {
         cancel()
+        let generation = scanGeneration.next()
         scanning = true; apps = []; files = []
         phase = "Scanning installed apps…"; progress = 0
         let threshold = thresholdDays
         task = Task.detached(priority: .userInitiated) {
-            await Self.runScan(thresholdDays: threshold)
+            await Self.runScan(thresholdDays: threshold, generation: generation)
         }
     }
 
     func cancel() {
+        _ = scanGeneration.next()
         task?.cancel(); task = nil; scanning = false
     }
 
     @discardableResult
     func moveToTrash(_ ids: Set<URL>) -> Int {
         let fm = FileManager.default
-        var trashed = 0
-        var bytes: Int64 = 0
-        for id in ids {
-            let size = (apps.first(where: { $0.id == id }) ?? files.first(where: { $0.id == id }))?.sizeBytes ?? 0
-            do {
-                try fm.trashItem(at: id, resultingItemURL: nil)
-                trashed += 1
-                bytes += size
-            }
-            catch { lastError = "Could not trash \(id.lastPathComponent): \(error.localizedDescription)" }
+        lastError = nil
+        let candidates = (apps + files).filter { ids.contains($0.id) }
+            .map { CleanupCandidate(id: $0.id, url: $0.url, bytes: $0.sizeBytes) }
+        let outcome = CleanupSafety.performTrash(candidates) {
+            try fm.trashItem(at: $0, resultingItemURL: nil)
         }
-        apps.removeAll { ids.contains($0.id) }
-        files.removeAll { ids.contains($0.id) }
-        if trashed > 0 { CleanupLog.record(module: .unused, itemCount: trashed, bytes: bytes) }
-        return trashed
+        apps.removeAll { outcome.succeeded.contains($0.id) }
+        files.removeAll { outcome.succeeded.contains($0.id) }
+        if !outcome.failures.isEmpty { lastError = outcome.failures.joined(separator: "\n") }
+        if !outcome.succeeded.isEmpty {
+            CleanupLog.record(module: .unused, itemCount: outcome.succeeded.count, bytes: outcome.bytes)
+        }
+        return outcome.succeeded.count
     }
 
     func revealInFinder(_ url: URL) {
@@ -100,9 +101,9 @@ final class LiveUnused: ObservableObject {
 
     // MARK: - Scan
 
-    nonisolated private static func runScan(thresholdDays: Int) async {
+    nonisolated private static func runScan(thresholdDays: Int, generation: Int) async {
         let cutoff = Date().addingTimeInterval(-Double(thresholdDays) * 86400)
-        await update(phase: "Scanning installed apps…", progress: 0.05)
+        await update(phase: "Scanning installed apps…", progress: 0.05, generation: generation)
         let appRoots = ["/Applications", "\(NSHomeDirectory())/Applications"]
         var unusedApps: [UnusedEntry] = []
         for root in appRoots where FileManager.default.fileExists(atPath: root) {
@@ -110,8 +111,8 @@ final class LiveUnused: ObservableObject {
             unusedApps.append(contentsOf: scanApps(in: root, cutoff: cutoff))
         }
         unusedApps.sort { $0.sizeBytes > $1.sizeBytes }
-        await publishApps(unusedApps)
-        await update(phase: "Scanning files & folders…", progress: 0.4)
+        await publishApps(unusedApps, generation: generation)
+        await update(phase: "Scanning files & folders…", progress: 0.4, generation: generation)
 
         let userRoots = [
             "\(NSHomeDirectory())/Documents",
@@ -128,11 +129,12 @@ final class LiveUnused: ObservableObject {
                 unusedFiles.append(contentsOf: scanFolder(at: root, cutoff: cutoff))
             }
             await update(phase: "Scanning files & folders…",
-                         progress: 0.4 + Double(i + 1) / Double(total) * 0.55)
+                         progress: 0.4 + Double(i + 1) / Double(total) * 0.55,
+                         generation: generation)
         }
         unusedFiles.sort { $0.sizeBytes > $1.sizeBytes }
-        await publishFiles(unusedFiles)
-        await finish()
+        await publishFiles(unusedFiles, generation: generation)
+        await finish(generation: generation)
     }
 
     nonisolated private static func scanApps(in root: String, cutoff: Date) -> [UnusedEntry] {
@@ -219,23 +221,36 @@ final class LiveUnused: ObservableObject {
         url.path.replacingOccurrences(of: NSHomeDirectory(), with: "~")
     }
 
-    nonisolated private static func update(phase: String, progress: Double) async {
+    nonisolated private static func update(phase: String, progress: Double, generation: Int) async {
         await MainActor.run {
-            LiveUnused.shared.phase = phase
-            LiveUnused.shared.progress = progress
+            let live = LiveUnused.shared
+            guard live.scanGeneration.accepts(generation) else { return }
+            live.phase = phase
+            live.progress = progress
         }
     }
-    nonisolated private static func publishApps(_ a: [UnusedEntry]) async {
-        await MainActor.run { LiveUnused.shared.apps = a }
-    }
-    nonisolated private static func publishFiles(_ f: [UnusedEntry]) async {
-        await MainActor.run { LiveUnused.shared.files = f }
-    }
-    nonisolated private static func finish() async {
+    nonisolated private static func publishApps(_ a: [UnusedEntry], generation: Int) async {
         await MainActor.run {
-            LiveUnused.shared.scanning = false
-            LiveUnused.shared.phase = "Done"
-            LiveUnused.shared.progress = 1
+            let live = LiveUnused.shared
+            guard live.scanGeneration.accepts(generation) else { return }
+            live.apps = a
+        }
+    }
+    nonisolated private static func publishFiles(_ f: [UnusedEntry], generation: Int) async {
+        await MainActor.run {
+            let live = LiveUnused.shared
+            guard live.scanGeneration.accepts(generation) else { return }
+            live.files = f
+        }
+    }
+    nonisolated private static func finish(generation: Int) async {
+        await MainActor.run {
+            let live = LiveUnused.shared
+            guard live.scanGeneration.accepts(generation) else { return }
+            live.scanning = false
+            live.task = nil
+            live.phase = "Done"
+            live.progress = 1
         }
     }
 }

@@ -365,7 +365,7 @@ final class LiveMemory: ObservableObject {
                     ?? url.deletingPathExtension().lastPathComponent
             if comm.contains("Helper") {
                 let suffix = comm.contains("Renderer") ? " (Renderer)" : comm.contains("GPU") ? " (GPU)" : " Helper"
-                return (name + suffix, true, bundlePath)
+                return (name.hasSuffix(suffix) ? name : name + suffix, true, bundlePath)
             }
             return (name, true, bundlePath)
         }

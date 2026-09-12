@@ -12,7 +12,7 @@ struct DiskVolume: Identifiable, Hashable {
     let format: String       // APFS, HFS+, ExFAT, …
     let totalBytes: Int64
     let freeBytes:  Int64
-    let smartStatus: String  // "Verified" / "Failing" / "Not Supported"
+    let smartStatus: DiskSMARTStatus
     let isEncrypted: Bool
     let isInternal: Bool
     let isSystem: Bool       // is the boot volume
@@ -29,58 +29,60 @@ final class LiveDiskHealth: ObservableObject {
     @Published private(set) var localSnapshotCount: Int = 0
     @Published private(set) var scanning: Bool = false
     @Published private(set) var lastError: String? = nil
+    @Published private(set) var hasCompletedScan: Bool = false
 
     private var task: Task<Void, Never>? = nil
+    private var generation = 0
     private init() {}
 
     func startIfNeeded() {
-        if volumes.isEmpty && !scanning { scan() }
+        if !hasCompletedScan && !scanning { scan() }
     }
 
     func scan() {
         cancel()
-        scanning = true
-        task = Task.detached(priority: .userInitiated) { await Self.runScan() }
+        generation += 1
+        let scanGeneration = generation
+        scanning = true; lastError = nil
+        if volumes.isEmpty { hasCompletedScan = false }
+        task = Task.detached(priority: .userInitiated) { await Self.runScan(generation: scanGeneration) }
     }
 
     func cancel() {
+        generation += 1
         task?.cancel(); task = nil; scanning = false
     }
 
     // MARK: - Scan
 
-    private nonisolated static func runScan() async {
-        let volumes = scanVolumes()
+    private nonisolated static func runScan(generation: Int) async {
+        let result = scanVolumes()
         let snaps = countLocalSnapshots()
         await MainActor.run {
-            LiveDiskHealth.shared.volumes = volumes
-            LiveDiskHealth.shared.localSnapshotCount = snaps
-            LiveDiskHealth.shared.scanning = false
+            let model = LiveDiskHealth.shared
+            guard model.generation == generation, !Task.isCancelled else { return }
+            model.volumes = result.volumes
+            model.localSnapshotCount = snaps
+            model.lastError = result.error
+            model.hasCompletedScan = true
+            model.scanning = false
         }
     }
 
-    private nonisolated static func scanVolumes() -> [DiskVolume] {
-        guard let plistData = run(["/usr/sbin/diskutil", "list", "-plist", "external", "internal"]),
+    private nonisolated static func scanVolumes() -> (volumes: [DiskVolume], error: String?) {
+        guard let plistData = run(["/usr/sbin/diskutil", "list", "-plist"]),
               let plist = try? PropertyListSerialization.propertyList(
-                  from: plistData, options: [], format: nil) as? [String: Any],
-              let allDisks = plist["AllDisksAndPartitions"] as? [[String: Any]]
-        else { return [] }
+                  from: plistData, options: [], format: nil) as? [String: Any]
+        else { return ([], "Disk information could not be read. Try re-scanning after reconnecting the volume.") }
 
         var rows: [DiskVolume] = []
-        for disk in allDisks {
-            // Each entry has Partitions and/or APFSVolumes. We surface
-            // every mountable volume, not the containers themselves.
-            let partitions = (disk["Partitions"] as? [[String: Any]]) ?? []
-            let apfsVols   = (disk["APFSVolumes"] as? [[String: Any]]) ?? []
-            for vol in (partitions + apfsVols) {
-                guard let bsd = vol["DeviceIdentifier"] as? String else { continue }
-                if let row = inspect(bsd: bsd) { rows.append(row) }
-            }
+        for bsd in SystemStatusPolicy.volumeDeviceIdentifiers(in: plist) {
+            if let row = inspect(bsd: bsd) { rows.append(row) }
         }
         // De-dupe by BSD name; sort system volume first.
         var seen = Set<String>()
         let unique = rows.filter { seen.insert($0.id).inserted }
-        return unique.sorted { ($0.isSystem ? 0 : 1) < ($1.isSystem ? 0 : 1) }
+        return (unique.sorted { ($0.isSystem ? 0 : 1) < ($1.isSystem ? 0 : 1) }, nil)
     }
 
     private nonisolated static func inspect(bsd: String) -> DiskVolume? {
@@ -92,12 +94,18 @@ final class LiveDiskHealth: ObservableObject {
         let name       = (info["VolumeName"] as? String) ?? bsd
         let format     = (info["FilesystemName"] as? String)
                       ?? (info["FilesystemType"] as? String) ?? "—"
-        let totalBytes = Int64((info["TotalSize"]   as? Int) ?? 0)
-        let freeBytes  = Int64((info["FreeSpace"]   as? Int) ?? 0)
-        let smart      = (info["SMARTStatus"]       as? String) ?? "Not Supported"
+        guard info["VolumeName"] != nil || !mountPoint.isEmpty else { return nil }
+        let capacity = SystemStatusPolicy.diskCapacity(info)
+        let totalBytes = capacity.total
+        let freeBytes = capacity.free
+        let smart = SystemStatusPolicy.diskSMARTStatus(info["SMARTStatus"] as? String)
         let encrypted  = (info["Encryption"]        as? Bool)  ?? false
         let isInt      = (info["Internal"]          as? Bool)  ?? false
         let isSystem   = mountPoint == "/"
+        if (info["OSInternal"] as? Bool) == true
+            || (isInt && (mountPoint.isEmpty || mountPoint.hasPrefix("/System/Volumes/"))) {
+            return nil
+        }
 
         return DiskVolume(
             id: bsd, mountPoint: mountPoint,
@@ -111,7 +119,7 @@ final class LiveDiskHealth: ObservableObject {
     private nonisolated static func countLocalSnapshots() -> Int {
         guard let out = run(["/usr/bin/tmutil", "listlocalsnapshots", "/"])
               .flatMap({ String(data: $0, encoding: .utf8) }) else { return 0 }
-        return out.split(separator: "\n").count
+        return SystemStatusPolicy.timeMachineSnapshotIdentifiers(in: out).count
     }
 
     // MARK: - Shell

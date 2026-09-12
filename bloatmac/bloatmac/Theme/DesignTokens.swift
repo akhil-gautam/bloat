@@ -74,7 +74,7 @@ enum Tokens {
 }
 
 extension Color {
-    init(hex: Int, alpha: Double = 1) {
+    nonisolated init(hex: Int, alpha: Double = 1) {
         let r = Double((hex >> 16) & 0xFF) / 255
         let g = Double((hex >>  8) & 0xFF) / 255
         let b = Double( hex        & 0xFF) / 255

@@ -1,6 +1,5 @@
 import SwiftUI
 import Foundation
-import CryptoKit
 import Vision
 import UniformTypeIdentifiers
 import QuickLookThumbnailing
@@ -9,9 +8,9 @@ import Combine
 
 // MARK: - Models
 
-enum DupKind: String { case exact, similarImage }
+nonisolated enum DupKind: String { case exact, similarImage }
 
-struct DupItem: Identifiable, Hashable {
+nonisolated struct DupItem: Identifiable, Hashable {
     let id: URL
     var url: URL { id }
     let name: String
@@ -23,7 +22,7 @@ struct DupItem: Identifiable, Hashable {
     var visualDistance: Float? = nil
 }
 
-struct DupGroup: Identifiable, Hashable {
+nonisolated struct DupGroup: Identifiable, Hashable {
     let id: String
     let kind: DupKind
     var items: [DupItem]
@@ -51,14 +50,26 @@ final class LiveDuplicates: ObservableObject {
     var totalRecoverable: Int64 {
         (exact + similar).reduce(0) { $0 + $1.recoverableBytes }
     }
+    var exactPotentialRecoverable: Int64 {
+        exactPotentialRecoverable(excluding: [])
+    }
+    func exactPotentialRecoverable(excluding excluded: Set<URL>) -> Int64 {
+        exact.reduce(0) { total, group in
+            total + CleanupSafety.additionalDuplicateBytes(
+                in: group.items.map { ($0.id, $0.sizeBytes) },
+                excluding: excluded
+            )
+        }
+    }
     var totalRecoverableText: String {
         let bcf = ByteCountFormatter(); bcf.allowedUnits = [.useGB, .useMB]; bcf.countStyle = .file
         return bcf.string(fromByteCount: totalRecoverable)
     }
 
     private var task: Task<Void, Never>? = nil
+    private var scanGeneration = ScanGeneration()
 
-    private static let scanRoots: [String] = {
+    private nonisolated static let scanRoots: [String] = {
         let h = NSHomeDirectory()
         return ["\(h)/Documents", "\(h)/Downloads", "\(h)/Desktop",
                 "\(h)/Pictures", "\(h)/Movies", "\(h)/Music"]
@@ -72,17 +83,19 @@ final class LiveDuplicates: ObservableObject {
 
     func scan() {
         cancel()
+        let generation = scanGeneration.next()
         scanning = true
         phase = "Indexing files…"
         progress = 0
         exact = []
         similar = []
         task = Task.detached(priority: .userInitiated) {
-            await Self.runScan()
+            await Self.runScan(generation: generation)
         }
     }
 
     func cancel() {
+        _ = scanGeneration.next()
         task?.cancel()
         task = nil
         scanning = false
@@ -93,11 +106,21 @@ final class LiveDuplicates: ObservableObject {
     func toggleKeep(groupID: String, itemID: URL) {
         if let gi = exact.firstIndex(where: { $0.id == groupID }),
            let ii = exact[gi].items.firstIndex(where: { $0.id == itemID }) {
+            if exact[gi].items[ii].keep && exact[gi].items.filter(\.keep).count == 1 {
+                lastError = "Keep at least one copy in every group."
+                return
+            }
+            lastError = nil
             exact[gi].items[ii].keep.toggle()
             return
         }
         if let gi = similar.firstIndex(where: { $0.id == groupID }),
            let ii = similar[gi].items.firstIndex(where: { $0.id == itemID }) {
+            if similar[gi].items[ii].keep && similar[gi].items.filter(\.keep).count == 1 {
+                lastError = "Keep at least one image in every group."
+                return
+            }
+            lastError = nil
             similar[gi].items[ii].keep.toggle()
         }
     }
@@ -112,45 +135,49 @@ final class LiveDuplicates: ObservableObject {
                 exact[gi].items[ii].keep = (exact[gi].items[ii].id == newestID)
             }
         }
-        for gi in similar.indices {
-            // Similar images: keep the largest file (highest fidelity / resolution)
-            let largestID = similar[gi].items.max { $0.sizeBytes < $1.sizeBytes }?.id
-            for ii in similar[gi].items.indices {
-                similar[gi].items[ii].keep = (similar[gi].items[ii].id == largestID)
-            }
-        }
+        // Similarity is a review aid, never proof that an image is safe to remove.
     }
 
     /// Trash every item with `keep == false` and prune now-empty groups.
     @discardableResult
     func resolveAll() -> Int {
         let fm = FileManager.default
-        var trashed = 0
-        var bytes: Int64 = 0
+        lastError = nil
+        var candidatesByURL: [URL: Int64] = [:]
         var failures: [String] = []
-        let candidates: [(URL, Int64)] = (exact + similar).flatMap { g in
-            g.items.filter { !$0.keep }.map { ($0.id, $0.sizeBytes) }
-        }
-        for (url, size) in candidates {
-            do {
-                try fm.trashItem(at: url, resultingItemURL: nil)
-                trashed += 1
-                bytes += size
-            } catch {
-                failures.append("\(url.lastPathComponent): \(error.localizedDescription)")
+        for group in exact + similar {
+            let choices = group.items.map { ($0.id, $0.keep) }
+            guard choices.contains(where: { !$0.1 }) else { continue }
+            guard CleanupSafety.hasExistingSurvivor(in: choices, exists: {
+                fm.fileExists(atPath: $0.path)
+            }) else {
+                failures.append("Skipped a duplicate group because its kept copy no longer exists. Rescan and review the group.")
+                continue
+            }
+            let deletionIDs = CleanupSafety.deletionIDs(from: choices)
+            for item in group.items where deletionIDs.contains(item.id) {
+                candidatesByURL[item.id] = item.sizeBytes
             }
         }
-        exact = prune(exact)
-        similar = prune(similar)
-        if !failures.isEmpty { lastError = failures.first }
-        if trashed > 0 { CleanupLog.record(module: .duplicates, itemCount: trashed, bytes: bytes) }
-        return trashed
+        let candidates = candidatesByURL.map {
+            CleanupCandidate(id: $0.key, url: $0.key, bytes: $0.value)
+        }
+        let outcome = CleanupSafety.performTrash(candidates) {
+            try fm.trashItem(at: $0, resultingItemURL: nil)
+        }
+        exact = prune(exact, removing: outcome.succeeded)
+        similar = prune(similar, removing: outcome.succeeded)
+        failures.append(contentsOf: outcome.failures)
+        if !failures.isEmpty { lastError = failures.joined(separator: "\n") }
+        if !outcome.succeeded.isEmpty {
+            CleanupLog.record(module: .duplicates, itemCount: outcome.succeeded.count, bytes: outcome.bytes)
+        }
+        return outcome.succeeded.count
     }
 
-    private func prune(_ groups: [DupGroup]) -> [DupGroup] {
+    private func prune(_ groups: [DupGroup], removing succeeded: Set<URL>) -> [DupGroup] {
         groups.compactMap { g in
-            let remaining = g.items.filter { _ in true }
-                .filter { FileManager.default.fileExists(atPath: $0.url.path) }
+            let remaining = g.items.filter { !succeeded.contains($0.id) }
             return remaining.count >= 2 ? DupGroup(id: g.id, kind: g.kind, items: remaining) : nil
         }
     }
@@ -161,9 +188,9 @@ final class LiveDuplicates: ObservableObject {
 
     // MARK: - Scan implementation (background actor-isolated to nonisolated workers)
 
-    nonisolated private static func runScan() async {
+    nonisolated private static func runScan(generation: Int) async {
         // 1. Walk all roots
-        await Self.update(phase: "Indexing files…", progress: 0)
+        await Self.update(phase: "Indexing files…", progress: 0, generation: generation)
         var allFiles: [(URL, Int64)] = []
         for path in scanRoots where FileManager.default.fileExists(atPath: path) {
             if Task.isCancelled { return }
@@ -171,7 +198,7 @@ final class LiveDuplicates: ObservableObject {
         }
 
         // 2. Bucket by exact byte size — only buckets with ≥2 entries are duplicate candidates.
-        await Self.update(phase: "Hashing candidates…", progress: 0.05)
+        await Self.update(phase: "Hashing candidates…", progress: 0.05, generation: generation)
         var byBytes: [Int64: [URL]] = [:]
         for (u, s) in allFiles where s >= 4096 {
             byBytes[s, default: []].append(u)
@@ -183,46 +210,46 @@ final class LiveDuplicates: ObservableObject {
         let total = max(1, candidates.count)
         for (i, url) in candidates.enumerated() {
             if Task.isCancelled { return }
-            if let h = quickHash(url: url) {
+            if let h = try? CleanupSafety.fullFileSHA256(at: url) {
                 byHash[h, default: []].append(url)
             }
             if i % 20 == 0 {
-                await Self.update(phase: "Hashing candidates…", progress: 0.05 + Double(i) / Double(total) * 0.45)
+                await Self.update(phase: "Hashing candidates…", progress: 0.05 + Double(i) / Double(total) * 0.45,
+                                  generation: generation)
             }
         }
         let exactGroups: [DupGroup] = byHash.compactMap { (hash, urls) -> DupGroup? in
             guard urls.count > 1 else { return nil }
-            var items = urls.map { url -> DupItem in
+            let items = urls.map { url -> DupItem in
                 DupItem(id: url, name: url.lastPathComponent,
                         parent: prettyParent(url),
                         sizeBytes: fileSize(at: url),
                         modified: modDate(at: url))
             }
-            if let newestIdx = items.indices.max(by: { (items[$0].modified ?? .distantPast) < (items[$1].modified ?? .distantPast) }) {
-                for i in items.indices { items[i].keep = (i == newestIdx) }
-            }
             return DupGroup(id: "ex-\(hash)", kind: .exact, items: items)
-        }.sorted { $0.recoverableBytes > $1.recoverableBytes }
+        }.sorted { potentialBytes(in: $0) > potentialBytes(in: $1) }
 
-        await Self.publishExact(exactGroups)
+        await Self.publishExact(exactGroups, generation: generation)
 
         // 4. Find visually-similar images via Vision feature prints.
         if Task.isCancelled { return }
-        await Self.update(phase: "Analyzing images with Vision…", progress: 0.55)
+        await Self.update(phase: "Analyzing images with Vision…", progress: 0.55, generation: generation)
+        let exactURLs = Set(exactGroups.flatMap { $0.items.map(\.id) })
         let imageURLs: [URL] = allFiles.compactMap { (u, _) -> URL? in
+            guard !exactURLs.contains(u) else { return nil }
             guard let t = UTType(filenameExtension: u.pathExtension.lowercased()) else { return nil }
             return t.conforms(to: .image) ? u : nil
         }
-        let imageGroups = await clusterSimilarImages(urls: imageURLs)
+        let imageGroups = await clusterSimilarImages(urls: imageURLs, generation: generation)
 
-        await Self.publishSimilar(imageGroups)
-        await Self.finishScan()
+        await Self.publishSimilar(imageGroups, generation: generation)
+        await Self.finishScan(generation: generation)
     }
 
     nonisolated private static func walk(path: String) -> [(URL, Int64)] {
         let fm = FileManager.default
         let url = URL(fileURLWithPath: path)
-        let keys: [URLResourceKey] = [.fileSizeKey, .isRegularFileKey, .isPackageKey]
+        let keys: [URLResourceKey] = [.fileSizeKey, .isRegularFileKey, .isDirectoryKey, .isPackageKey]
         guard let en = fm.enumerator(at: url, includingPropertiesForKeys: keys,
                                      options: [.skipsHiddenFiles, .skipsPackageDescendants],
                                      errorHandler: { _, _ in true }) else { return [] }
@@ -230,6 +257,10 @@ final class LiveDuplicates: ObservableObject {
         for case let item as URL in en {
             if Task.isCancelled { break }
             let v = try? item.resourceValues(forKeys: Set(keys))
+            if v?.isDirectory == true && CleanupSafety.isManagedDependencyDirectory(item) {
+                en.skipDescendants()
+                continue
+            }
             if v?.isRegularFile != true { continue }
             if let s = v?.fileSize, s > 0 {
                 out.append((item, Int64(s)))
@@ -238,37 +269,7 @@ final class LiveDuplicates: ObservableObject {
         return out
     }
 
-    /// SHA-256 over the whole file (small files) or first/middle/last 1 MB sample (large files).
-    /// Sampling protects throughput on multi-GB videos at a negligible false-positive risk.
-    nonisolated private static func quickHash(url: URL) -> String? {
-        guard let fh = try? FileHandle(forReadingFrom: url) else { return nil }
-        defer { try? fh.close() }
-        guard let total = try? fh.seekToEnd() else { return nil }
-        try? fh.seek(toOffset: 0)
-        var hasher = SHA256()
-        var sizeLE = total.littleEndian
-        withUnsafeBytes(of: &sizeLE) { hasher.update(data: Data($0)) }
-
-        let chunk = 1_048_576
-        if total <= 50_000_000 {
-            while let data = try? fh.read(upToCount: chunk), !data.isEmpty {
-                hasher.update(data: data)
-            }
-        } else {
-            // first MB
-            try? fh.seek(toOffset: 0)
-            if let d = try? fh.read(upToCount: chunk) { hasher.update(data: d) }
-            // middle MB
-            try? fh.seek(toOffset: total / 2)
-            if let d = try? fh.read(upToCount: chunk) { hasher.update(data: d) }
-            // last MB
-            try? fh.seek(toOffset: max(0, total - UInt64(chunk)))
-            if let d = try? fh.read(upToCount: chunk) { hasher.update(data: d) }
-        }
-        return hasher.finalize().compactMap { String(format: "%02x", $0) }.joined()
-    }
-
-    nonisolated private static func clusterSimilarImages(urls: [URL]) async -> [DupGroup] {
+    nonisolated private static func clusterSimilarImages(urls: [URL], generation: Int) async -> [DupGroup] {
         var prints: [(URL, VNFeaturePrintObservation)] = []
         let total = max(1, urls.count)
         for (i, url) in urls.enumerated() {
@@ -278,7 +279,8 @@ final class LiveDuplicates: ObservableObject {
             }
             if i % 10 == 0 {
                 await Self.update(phase: "Analyzing images with Vision… (\(i + 1)/\(urls.count))",
-                                  progress: 0.55 + Double(i) / Double(total) * 0.4)
+                                  progress: 0.55 + Double(i) / Double(total) * 0.4,
+                                  generation: generation)
             }
         }
         if Task.isCancelled { return [] }
@@ -312,14 +314,10 @@ final class LiveDuplicates: ObservableObject {
                 it.visualDistance = dist
                 return it
             }
-            // Default: keep the largest file (likely highest fidelity)
-            if let largestIdx = items.indices.max(by: { items[$0].sizeBytes < items[$1].sizeBytes }) {
-                for i in items.indices { items[i].keep = (i == largestIdx) }
-            }
             items.sort { $0.sizeBytes > $1.sizeBytes }
             let id = "sim-" + (c.entries.first?.0.path ?? UUID().uuidString)
             return DupGroup(id: id, kind: .similarImage, items: items)
-        }.sorted { $0.recoverableBytes > $1.recoverableBytes }
+        }.sorted { potentialBytes(in: $0) > potentialBytes(in: $1) }
         return groups
     }
 
@@ -348,28 +346,45 @@ final class LiveDuplicates: ObservableObject {
     nonisolated private static func modDate(at url: URL) -> Date? {
         (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
     }
+
+    nonisolated private static func potentialBytes(in group: DupGroup) -> Int64 {
+        max(0, group.totalBytes - (group.items.first?.sizeBytes ?? 0))
+    }
     nonisolated private static func prettyParent(_ url: URL) -> String {
         url.deletingLastPathComponent().path
             .replacingOccurrences(of: NSHomeDirectory(), with: "~")
     }
 
-    nonisolated private static func update(phase: String, progress: Double) async {
+    nonisolated private static func update(phase: String, progress: Double, generation: Int) async {
         await MainActor.run {
-            LiveDuplicates.shared.phase = phase
-            LiveDuplicates.shared.progress = progress
+            let live = LiveDuplicates.shared
+            guard live.scanGeneration.accepts(generation) else { return }
+            live.phase = phase
+            live.progress = progress
         }
     }
-    nonisolated private static func publishExact(_ groups: [DupGroup]) async {
-        await MainActor.run { LiveDuplicates.shared.exact = groups }
-    }
-    nonisolated private static func publishSimilar(_ groups: [DupGroup]) async {
-        await MainActor.run { LiveDuplicates.shared.similar = groups }
-    }
-    nonisolated private static func finishScan() async {
+    nonisolated private static func publishExact(_ groups: [DupGroup], generation: Int) async {
         await MainActor.run {
-            LiveDuplicates.shared.scanning = false
-            LiveDuplicates.shared.phase = "Done"
-            LiveDuplicates.shared.progress = 1
+            let live = LiveDuplicates.shared
+            guard live.scanGeneration.accepts(generation) else { return }
+            live.exact = groups
+        }
+    }
+    nonisolated private static func publishSimilar(_ groups: [DupGroup], generation: Int) async {
+        await MainActor.run {
+            let live = LiveDuplicates.shared
+            guard live.scanGeneration.accepts(generation) else { return }
+            live.similar = groups
+        }
+    }
+    nonisolated private static func finishScan(generation: Int) async {
+        await MainActor.run {
+            let live = LiveDuplicates.shared
+            guard live.scanGeneration.accepts(generation) else { return }
+            live.scanning = false
+            live.task = nil
+            live.phase = "Done"
+            live.progress = 1
         }
     }
 }

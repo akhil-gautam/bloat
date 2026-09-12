@@ -25,7 +25,7 @@ struct SmartCareScreen: View {
         HStack(alignment: .top, spacing: 18) {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Smart Care").font(.system(size: 26, weight: .bold))
-                Text("One scan covers storage, caches, duplicates, startup items, and memory. Apply individual recommendations or trigger a full clean.")
+                Text("One scan gathers storage, cache, duplicate, startup, and memory candidates. Review each recommendation in its feature before taking action.")
                     .font(.system(size: 13))
                     .foregroundStyle(Tokens.text3)
                     .frame(maxWidth: 540, alignment: .leading)
@@ -265,10 +265,7 @@ struct SmartCareScreen: View {
             return "\(formatGB(bytes)) across \(dc.downloads.count + dc.caches.count) items"
         case .duplicates:
             let d = LiveDuplicates.shared
-            let bytes = (d.exact + d.similar).reduce(Int64(0)) { acc, g in
-                acc + g.items.reduce(Int64(0)) { $0 + ($1.keep ? 0 : $1.sizeBytes) }
-            }
-            return "\(formatGB(bytes)) reclaimable · \(d.exact.count + d.similar.count) groups"
+            return "\(formatGB(d.exactPotentialRecoverable)) verified exact potential · \(d.exact.count) groups"
         case .startup:
             let items = LiveStartup.shared.items
             let flagged = items.filter { $0.risk == .flagged }.count
@@ -288,9 +285,9 @@ struct SmartCareScreen: View {
     @ViewBuilder
     private func resultPanel(_ r: LiveSmartCare.Result) -> some View {
         HStack(alignment: .top, spacing: 14) {
-            // Big number — total reclaimable
+            // Aggregate candidate size; every cleanup still happens in its feature.
             VStack(alignment: .leading, spacing: 6) {
-                Text("Reclaimable")
+                Text("Candidates to review")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(Tokens.text3)
                 Text(formatGB(r.cleanableBytes))
@@ -388,8 +385,8 @@ struct SmartCareScreen: View {
                 .font(.system(size: 32, weight: .semibold))
                 .foregroundStyle(state.accent.value)
             VStack(alignment: .leading, spacing: 4) {
-                Text("Run a scan to see what's reclaimable").font(.system(size: 14, weight: .semibold))
-                Text("Takes about a minute on most Macs.").font(.system(size: 12)).foregroundStyle(Tokens.text3)
+                Text("Run a scan to build a review report").font(.system(size: 14, weight: .semibold))
+                Text("No files or settings are changed by this scan.").font(.system(size: 12)).foregroundStyle(Tokens.text3)
             }
             Spacer()
         }

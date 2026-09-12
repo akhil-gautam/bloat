@@ -3,6 +3,7 @@ import SwiftUI
 struct MaintenanceScreen: View {
     @EnvironmentObject var state: AppState
     @ObservedObject private var m = LiveMaintenance.shared
+    @State private var pendingAction: MaintenanceAction?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -20,6 +21,14 @@ struct MaintenanceScreen: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Tokens.bgWindow)
+        .alert(item: $pendingAction) { action in
+            Alert(
+                title: Text("Run \(action.title)?"),
+                message: Text(action.impact + (action.requiresHelper ? " macOS will ask for administrator approval." : "")),
+                primaryButton: .default(Text("Run")) { m.run(action.id) },
+                secondaryButton: .cancel()
+            )
+        }
     }
 
     private var header: some View {
@@ -30,7 +39,6 @@ struct MaintenanceScreen: View {
                     .font(.system(size: 12)).foregroundStyle(Tokens.text3)
             }
             Spacer()
-            Btn(label: "Run all available", icon: "play.fill", style: .primary) { m.runAll() }
         }
         .padding(.horizontal, 24).padding(.vertical, 18)
     }
@@ -52,17 +60,18 @@ struct MaintenanceScreen: View {
 
     @ViewBuilder
     private func actionCard(_ a: MaintenanceAction) -> some View {
-        let disabled = false   // historic: was `a.requiresHelper && !m.helperAvailable`
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 12) {
-                statusDot(a.status, disabled: disabled)
+                statusDot(a.status)
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
                         Text(a.title).font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(disabled ? Tokens.text3 : Tokens.text)
+                            .foregroundStyle(Tokens.text)
                         if a.requiresHelper { rootPill }
                     }
                     Text(a.detail).font(.system(size: 11)).foregroundStyle(Tokens.text3)
+                        .lineLimit(2)
+                    Text(a.impact).font(.system(size: 10.5)).foregroundStyle(Tokens.warn)
                         .lineLimit(2)
                     if let last = a.lastRunAt {
                         Text("Last run: \(last.formatted(date: .omitted, time: .shortened))")
@@ -73,9 +82,7 @@ struct MaintenanceScreen: View {
                 if a.status == .running {
                     ProgressView().controlSize(.small)
                 } else {
-                    Btn(label: "Run", icon: "play", style: .ghost) { m.run(a.id) }
-                        .disabled(disabled)
-                        .opacity(disabled ? 0.5 : 1)
+                    Btn(label: "Review & run", icon: "play", style: .ghost) { pendingAction = a }
                 }
             }
             .padding(14)
@@ -97,9 +104,8 @@ struct MaintenanceScreen: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
-    private func statusDot(_ s: MaintenanceStatus, disabled: Bool) -> some View {
+    private func statusDot(_ s: MaintenanceStatus) -> some View {
         let color: Color = {
-            if disabled { return Tokens.text3 }
             switch s {
             case .idle:    return Tokens.text3
             case .running: return state.accent.value

@@ -12,7 +12,7 @@ import AppKit
 /// (a full SMAppService daemon target with XPC) is overkill for four
 /// rarely-run shell commands.
 enum MaintenanceID: String, CaseIterable {
-    case flushDNS, purgeRAM, periodic, reindexSpotlight, rebuildLSUser, rebuildLSSystem, verifyVolume, repairPermissions
+    case flushDNS, purgeRAM, periodic, reindexSpotlight, rebuildLSUser, rebuildLSSystem, verifyVolume
 }
 
 enum MaintenanceStatus { case idle, running, success, failed }
@@ -21,6 +21,7 @@ struct MaintenanceAction: Identifiable {
     let id: MaintenanceID
     let title: String
     let detail: String
+    let impact: String
     let requiresHelper: Bool
     var status: MaintenanceStatus = .idle
     var output: String = ""
@@ -32,36 +33,35 @@ final class LiveMaintenance: ObservableObject {
     static let shared = LiveMaintenance()
 
     @Published var actions: [MaintenanceAction]
-    /// Always true now that root actions escalate via NSAppleScript admin
-    /// rather than waiting on a persistent helper. Kept on the published
-    /// surface for the screen's banner/disabled-state machinery.
-    @Published private(set) var helperAvailable: Bool = true
-
     private init() {
         actions = [
             .init(id: .flushDNS,         title: "Flush DNS cache",
-                  detail: "dscacheutil -flushcache && killall -HUP mDNSResponder",
+                  detail: "Clear cached DNS lookups and restart name resolution.",
+                  impact: "Network lookups may pause briefly while macOS rebuilds the cache.",
                   requiresHelper: true),
             .init(id: .purgeRAM,         title: "Purge inactive memory",
-                  detail: "/usr/sbin/purge",
+                  detail: "Ask macOS to discard inactive memory immediately.",
+                  impact: "Apps may slow down temporarily as cached data is loaded again.",
                   requiresHelper: true),
             .init(id: .periodic,         title: "Run periodic scripts",
-                  detail: "/usr/sbin/periodic daily weekly monthly",
+                  detail: "Run macOS daily, weekly, and monthly housekeeping scripts.",
+                  impact: "This can take several minutes and may duplicate work macOS already schedules.",
                   requiresHelper: true),
             .init(id: .reindexSpotlight, title: "Reindex Spotlight",
-                  detail: "mdutil -E /",
+                  detail: "Erase and rebuild the Spotlight index for the startup disk.",
+                  impact: "Indexing can take hours and increase CPU, disk, and battery use.",
                   requiresHelper: true),
             .init(id: .rebuildLSUser,    title: "Rebuild Launch Services (user)",
-                  detail: "lsregister -kill -r -domain user",
+                  detail: "Rebuild the current user's app and document-type registrations.",
+                  impact: "Default-app associations and Open With menus may refresh.",
                   requiresHelper: false),
             .init(id: .rebuildLSSystem,  title: "Rebuild Launch Services (system)",
-                  detail: "lsregister -kill -r -domain local -domain system",
+                  detail: "Rebuild local and system app registrations.",
+                  impact: "Open With menus and app registrations may be temporarily incomplete.",
                   requiresHelper: true),
             .init(id: .verifyVolume,     title: "Verify startup disk",
-                  detail: "diskutil verifyVolume /",
-                  requiresHelper: false),
-            .init(id: .repairPermissions,title: "Repair disk permissions",
-                  detail: "Deprecated since macOS 10.11 — system installer handles this now.",
+                  detail: "Run a read-only filesystem verification on the startup volume.",
+                  impact: "The check can take several minutes and may increase disk activity.",
                   requiresHelper: false),
         ]
     }
@@ -85,10 +85,6 @@ final class LiveMaintenance: ObservableObject {
         }
     }
 
-    func runAll() {
-        for action in actions { run(action.id) }
-    }
-
     // MARK: - Execution
 
     private nonisolated static func execute(_ action: MaintenanceAction) async -> (Bool, String) {
@@ -100,10 +96,6 @@ final class LiveMaintenance: ObservableObject {
             // privilege escalation.
             let path = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
             return shell([path, "-kill", "-r", "-domain", "user"])
-        case .repairPermissions:
-            // No-op — surface the educational note and call it a success.
-            return (true, "Skipped: macOS handles this automatically since 10.11 El Capitan.")
-
         // Root-required actions — escalate via AppleScript admin.
         case .flushDNS:
             return await runAsAdmin("/usr/bin/dscacheutil -flushcache && /usr/bin/killall -HUP mDNSResponder")

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject var state: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack {
@@ -15,23 +16,24 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black.ignoresSafeArea())
         .tint(state.accent.value)
-        .animation(.easeOut(duration: 0.2), value: state.notifOpen)
-        .animation(.easeOut(duration: 0.2), value: state.widgetOpen)
-        .animation(.easeOut(duration: 0.2), value: state.needsFDA)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: state.notifOpen)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: state.widgetOpen)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: state.needsFDA)
     }
 }
 
 struct AppShell: View {
     @EnvironmentObject var state: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         HStack(spacing: 0) {
             Sidebar()
                 .frame(width: 232)
             VStack(spacing: 0) {
-                Topbar()
+                Topbar().zIndex(1)
                 ScreenRouter()
                     .id(state.current)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

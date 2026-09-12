@@ -10,11 +10,17 @@ struct ThreatHygieneScreen: View {
             Divider()
             ScrollView {
                 LazyVStack(spacing: 12) {
-                    if h.findings.isEmpty && !h.scanning { emptyState }
-                    summaryCard
-                    ForEach(HygieneCategory.allCases, id: \.self) { cat in
-                        if let rows = h.byCategory[cat], !rows.isEmpty {
-                            categorySection(cat, rows: rows)
+                    if h.scanning {
+                        scanningState
+                    } else if !h.hasCompletedScan {
+                        idleState
+                    } else {
+                        if let error = h.lastError { ActionError(message: error) }
+                        summaryCard
+                        ForEach(HygieneCategory.allCases, id: \.self) { cat in
+                            if let rows = h.byCategory[cat], !rows.isEmpty {
+                                categorySection(cat, rows: rows)
+                            }
                         }
                     }
                 }
@@ -49,13 +55,14 @@ struct ThreatHygieneScreen: View {
         let critical   = actionable.filter { $0.severity == .critical }.count
         let warning    = actionable.filter { $0.severity == .warning }.count
         let info       = actionable.filter { $0.severity == .info }.count
-        let allGood    = critical == 0 && warning == 0
+        let incomplete = h.lastError != nil
+        let allGood    = critical == 0 && warning == 0 && !incomplete
         return HStack(spacing: 14) {
-            Image(systemName: allGood ? "checkmark.shield.fill" : "exclamationmark.shield.fill")
+            Image(systemName: incomplete ? "questionmark.diamond.fill" : allGood ? "checkmark.shield.fill" : "exclamationmark.shield.fill")
                 .font(.system(size: 26))
-                .foregroundStyle(critical > 0 ? Tokens.danger : warning > 0 ? Tokens.warn : Tokens.good)
+                .foregroundStyle(incomplete ? Tokens.text3 : critical > 0 ? Tokens.danger : warning > 0 ? Tokens.warn : Tokens.good)
             VStack(alignment: .leading, spacing: 2) {
-                Text(allGood ? "Nothing critical detected" : "Review \(critical + warning) finding\(critical + warning == 1 ? "" : "s")")
+                Text(incomplete ? "Audit incomplete" : allGood ? "No heuristic warnings found" : "Review \(critical + warning) finding\(critical + warning == 1 ? "" : "s")")
                     .font(.system(size: 14, weight: .semibold)).foregroundStyle(Tokens.text)
                 HStack(spacing: 12) {
                     if critical > 0 { countPill("\(critical) critical", Tokens.danger) }
@@ -63,6 +70,10 @@ struct ThreatHygieneScreen: View {
                     if info     > 0 { countPill("\(info) info",         Tokens.text3) }
                 }
                 .font(.system(size: 11))
+                if allGood {
+                    Text("Completed four heuristic categories; app signatures are sampled up to 80. This is not an antivirus guarantee.")
+                        .font(.system(size: 11)).foregroundStyle(Tokens.text3)
+                }
             }
             Spacer()
         }
@@ -141,11 +152,23 @@ struct ThreatHygieneScreen: View {
         return Circle().fill(color).frame(width: 8, height: 8)
     }
 
-    private var emptyState: some View {
+    private var idleState: some View {
         VStack(spacing: 8) {
             Image(systemName: "shield.checkered").font(.system(size: 32)).foregroundStyle(Tokens.text3)
             Text("Run a scan to audit your Mac's hygiene").font(.system(size: 13, weight: .semibold))
             Text("Takes about 15 seconds.").font(.system(size: 12)).foregroundStyle(Tokens.text3)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(40)
+    }
+
+    private var scanningState: some View {
+        VStack(spacing: 8) {
+            ProgressView()
+            Text(h.phase.isEmpty ? "Running heuristic checks…" : h.phase)
+                .font(.system(size: 12)).foregroundStyle(Tokens.text3)
+            Text("No health conclusion is shown until the audit finishes.")
+                .font(.system(size: 11)).foregroundStyle(Tokens.text3)
         }
         .frame(maxWidth: .infinity)
         .padding(40)

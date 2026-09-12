@@ -1,30 +1,54 @@
 import SwiftUI
 
-// Placeholder overlay implementations — real ones land in Phase 5.
 struct NotifPanel: View {
     @EnvironmentObject var state: AppState
+    @ObservedObject private var live = LiveDashboard.shared
+    private var recommendations: [DashRecommendation] { live.recommendations.filter { $0.priority > 0 } }
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Notifications").font(.system(size: 13, weight: .bold))
+                Text("Recommendations").font(.system(size: 13, weight: .bold))
                 Spacer()
                 Button("Close") { state.notifOpen = false }
                     .buttonStyle(.plain).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Tokens.text3)
             }.padding(14)
             Divider()
-            VStack(spacing: 10) {
+            if recommendations.isEmpty {
+              VStack(spacing: 10) {
                 Image(systemName: "bell.slash")
                     .font(.system(size: 28, weight: .light))
                     .foregroundStyle(Tokens.text3)
                     .frame(width: 56, height: 56)
                     .background(Circle().fill(Tokens.bgPanel2))
-                Text("No notifications").font(.system(size: 13, weight: .bold))
-                Text("Alerts from scans, cleanups, and system warnings will appear here.")
+                Text("No recommendations right now").font(.system(size: 13, weight: .bold))
+                Text("Open Dashboard to refresh your Mac's current health and scan suggestions.")
                     .font(.system(size: 11.5)).foregroundStyle(Tokens.text3)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 24)
             }
             .frame(maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 12) {
+                        Text("From your latest health snapshot")
+                            .font(.system(size: 11)).foregroundStyle(Tokens.text3)
+                        ForEach(recommendations) { recommendation in
+                            Button { state.goto(recommendation.target) } label: {
+                                HStack(alignment: .top, spacing: 10) {
+                                    Image(systemName: recommendation.icon).foregroundStyle(recommendation.tone.color)
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(recommendation.title).font(.system(size: 12, weight: .semibold))
+                                        Text(recommendation.body).font(.system(size: 11)).foregroundStyle(Tokens.text3)
+                                        Text(recommendation.actionLabel).font(.system(size: 11, weight: .medium)).foregroundStyle(state.accent.value)
+                                    }
+                                    Spacer(minLength: 0)
+                                }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                            }.buttonStyle(.plain)
+                            Divider()
+                        }
+                    }.padding(14)
+                }
+            }
         }
         .frame(width: 340, height: 320)
         .background(Tokens.bgPanel)
@@ -195,13 +219,13 @@ private struct StepRow: View {
 struct Onboarding: View {
     @EnvironmentObject var state: AppState
     @State private var progress: Double = 0
-    @State private var phase: String = "Indexing /Applications…"
+    @State private var phase: String = "Review storage and large files"
     private let phases = [
-        "Indexing /Applications…",
-        "Walking ~/Library/Caches…",
-        "Hashing duplicate candidates…",
-        "Building treemap…",
-        "Done",
+        "Review storage and large files",
+        "Find caches and duplicate candidates",
+        "Check memory, battery, and network",
+        "Choose what to keep before moving anything to Trash",
+        "Ready — choose a screen to start scanning",
     ]
     var body: some View {
         ZStack {
@@ -210,6 +234,7 @@ struct Onboarding: View {
                 BrandMark().scaleEffect(2.4).padding(.bottom, 8)
                 Text("Welcome to BloatMac").font(.system(size: 22, weight: .bold))
                 Text(phase).font(.system(size: 13)).foregroundStyle(Tokens.text3)
+                Text("A quick tour. No files are changed.").font(.system(size: 11)).foregroundStyle(Tokens.text3)
                 ProgressView(value: progress).progressViewStyle(.linear).frame(width: 280).tint(state.accent.value)
                 Button("Skip") { state.dismissOnboarding() }
                     .buttonStyle(.plain)
@@ -221,6 +246,7 @@ struct Onboarding: View {
     }
     private func runScan() async {
         for (i, p) in phases.enumerated() {
+            if Task.isCancelled { return }
             phase = p
             try? await Task.sleep(nanoseconds: 700_000_000)
             withAnimation(.easeOut(duration: 0.6)) {

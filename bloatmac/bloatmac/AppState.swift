@@ -44,6 +44,7 @@ final class AppState: ObservableObject {
     @Published var widgetOpen = false
     @Published var onboardingActive = false
     @Published var needsFDA = false
+    @Published private(set) var fullDiskAccess: Bool? = nil
     @Published var searchQuery: String = ""
     @Published var searchFocusToken: Int = 0   // bumped to nudge focus
 
@@ -70,10 +71,11 @@ final class AppState: ObservableObject {
     /// scenePhase .active to pick up grants made in System Settings.
     func refreshPermissions() {
         let granted = Self.hasFullDiskAccess()
-        needsFDA = !granted && !permissionsDismissed
+        fullDiskAccess = granted
+        needsFDA = granted == false && !permissionsDismissed
         // If the user has now granted access, clear the dismissed flag so the
         // gate would re-appear cleanly if they ever revoke it.
-        if granted { permissionsDismissed = false }
+        if granted == true { permissionsDismissed = false }
     }
 
     func dismissPermissionsGate() {
@@ -89,9 +91,8 @@ final class AppState: ObservableObject {
     /// Probe well-known TCC-protected user directories to infer whether the
     /// running app has Full Disk Access. We try several paths: if any exist
     /// and we can list them (or fail with a permission error), we have a
-    /// definitive answer. If none exist (fresh machine), assume granted to
-    /// avoid pestering the user.
-    private static func hasFullDiskAccess() -> Bool {
+    /// definitive answer. If none exist, keep the status unknown.
+    private static func hasFullDiskAccess() -> Bool? {
         let home = NSHomeDirectory() as NSString
         let probes = [
             home.appendingPathComponent("Library/Mail"),
@@ -112,7 +113,7 @@ final class AppState: ObservableObject {
                 return false   // permission denied — FDA missing
             }
         }
-        return true   // inconclusive — assume granted
+        return nil   // inconclusive is not proof of a grant
     }
 
     func goto(_ s: Screen) {

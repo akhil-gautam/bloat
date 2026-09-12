@@ -4,7 +4,7 @@ struct SystemJunkScreen: View {
     @EnvironmentObject var state: AppState
     @ObservedObject private var j = LiveSystemJunk.shared
     @State private var selection: Set<String> = []
-    @State private var expanded: Set<JunkKind> = [.xcode, .iosBackup]
+    @State private var expanded: Set<JunkKind> = [.xcode, .xcodeArchives, .iosBackup]
     @State private var showConfirm = false
 
     private var totalSelected: Int64 {
@@ -19,7 +19,12 @@ struct SystemJunkScreen: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider()
-            if j.categories.isEmpty && !j.scanning {
+            if let error = j.lastError { ActionError(message: error) }
+            if j.scanning && j.categories.isEmpty {
+                loadingState
+            } else if !j.hasCompletedScan {
+                cancelledState
+            } else if j.categories.isEmpty {
                 emptyState
             } else {
                 ScrollView {
@@ -43,7 +48,7 @@ struct SystemJunkScreen: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("\(formatBytes(totalSelected)) will be reclaimed.")
+            Text("Files move to Trash; selected Time Machine snapshots are deleted by macOS. Empty Trash before file storage is released. Review caution items before continuing.")
         }
     }
 
@@ -137,8 +142,8 @@ struct SystemJunkScreen: View {
     private func riskPill(_ r: JunkRisk) -> some View {
         let (label, color): (String, Color) = {
             switch r {
-            case .safe:    return ("safe",    Tokens.good)
-            case .caution: return ("caution", Tokens.warn)
+            case .safe:    return ("rebuildable", Tokens.good)
+            case .caution: return ("review", Tokens.warn)
             case .risky:   return ("risky",   Tokens.danger)
             }
         }()
@@ -157,8 +162,23 @@ struct SystemJunkScreen: View {
         VStack(spacing: 8) {
             Image(systemName: "checkmark.circle.fill").font(.system(size: 32))
                 .foregroundStyle(Tokens.good)
-            Text("Nothing to clean").font(.system(size: 13, weight: .semibold))
-            Text("Click Re-scan to look again.").font(.system(size: 12)).foregroundStyle(Tokens.text3)
+            Text("No review candidates found").font(.system(size: 13, weight: .semibold))
+            Text("The completed scan found no items in these system-junk categories.").font(.system(size: 12)).foregroundStyle(Tokens.text3)
+        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var loadingState: some View {
+        VStack(spacing: 8) {
+            ProgressView()
+            Text("Scanning system-junk categories…").font(.system(size: 12)).foregroundStyle(Tokens.text3)
+        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var cancelledState: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "trash.slash").font(.system(size: 30)).foregroundStyle(Tokens.text3)
+            Text("System-junk scan not completed").font(.system(size: 13, weight: .semibold))
+            Text("Re-scan to build a new review list.").font(.system(size: 12)).foregroundStyle(Tokens.text3)
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 

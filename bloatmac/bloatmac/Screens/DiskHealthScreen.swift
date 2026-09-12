@@ -10,8 +10,11 @@ struct DiskHealthScreen: View {
             Divider()
             ScrollView {
                 LazyVStack(spacing: 12) {
-                    if d.volumes.isEmpty && !d.scanning { emptyState }
-                    summaryCard
+                    if d.scanning { scanningState }
+                    else if !d.hasCompletedScan { idleState }
+                    else if let error = d.lastError { errorState(error) }
+                    else if d.volumes.isEmpty { emptyState }
+                    else { summaryCard }
                     ForEach(d.volumes) { volume in
                         volumeCard(volume)
                     }
@@ -42,15 +45,17 @@ struct DiskHealthScreen: View {
     }
 
     private var summaryCard: some View {
-        let allHealthy = d.volumes.allSatisfy { $0.smartStatus == "Verified" || $0.smartStatus == "Not Supported" }
+        let failing = d.volumes.contains { $0.smartStatus == .failing }
+        let verified = d.volumes.filter { $0.smartStatus == .verified }.count
+        let notVerified = d.volumes.count - verified
         return HStack(spacing: 14) {
-            Image(systemName: allHealthy ? "checkmark.shield.fill" : "exclamationmark.shield.fill")
+            Image(systemName: failing ? "exclamationmark.shield.fill" : verified > 0 ? "checkmark.shield.fill" : "questionmark.diamond.fill")
                 .font(.system(size: 26))
-                .foregroundStyle(allHealthy ? Tokens.good : Tokens.danger)
+                .foregroundStyle(failing ? Tokens.danger : verified > 0 ? Tokens.good : Tokens.text3)
             VStack(alignment: .leading, spacing: 2) {
-                Text(allHealthy ? "All volumes report healthy" : "Volume needs attention")
+                Text(failing ? "A volume reports a SMART failure" : verified > 0 ? "\(verified) volume\(verified == 1 ? "" : "s") SMART verified" : "SMART status unavailable")
                     .font(.system(size: 14, weight: .semibold)).foregroundStyle(Tokens.text)
-                Text("SMART verified across reporting volumes. Local APFS snapshots: \(d.localSnapshotCount).")
+                Text("\(notVerified) volume\(notVerified == 1 ? "" : "s") not SMART-verified · \(d.localSnapshotCount) local APFS snapshots")
                     .font(.system(size: 11)).foregroundStyle(Tokens.text3)
             }
             Spacer()
@@ -125,11 +130,11 @@ struct DiskHealthScreen: View {
             .foregroundStyle(Tokens.good)
     }
 
-    private func smartPill(_ status: String) -> some View {
-        let color: Color = (status == "Verified") ? Tokens.good
-                         : (status == "Not Supported") ? Tokens.text3
-                         : Tokens.danger
-        return Text(status)
+    private func smartPill(_ status: DiskSMARTStatus) -> some View {
+        let color: Color = status == .verified ? Tokens.good
+                         : status == .failing ? Tokens.danger
+                         : Tokens.text3
+        return Text(status.rawValue)
             .font(.system(size: 10, weight: .bold))
             .padding(.horizontal, 6).padding(.vertical, 2)
             .background(RoundedRectangle(cornerRadius: 4).fill(color.opacity(0.18)))
@@ -139,9 +144,35 @@ struct DiskHealthScreen: View {
     private var emptyState: some View {
         VStack(spacing: 8) {
             Image(systemName: "internaldrive").font(.system(size: 32)).foregroundStyle(Tokens.text3)
-            Text("No volumes detected").font(.system(size: 13, weight: .semibold))
+            Text("No mounted volumes detected").font(.system(size: 13, weight: .semibold))
+            Text("SMART health is unknown until a volume can be read.")
+                .font(.system(size: 12)).foregroundStyle(Tokens.text3)
         }
         .frame(maxWidth: .infinity)
+        .padding(40)
+    }
+
+    private var scanningState: some View {
+        VStack(spacing: 8) {
+            ProgressView()
+            Text("Reading volume and SMART status…").font(.system(size: 12)).foregroundStyle(Tokens.text3)
+        }.frame(maxWidth: .infinity).padding(40)
+    }
+
+    private var idleState: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "internaldrive").font(.system(size: 30)).foregroundStyle(Tokens.text3)
+            Text("Disk health scan not completed").font(.system(size: 13, weight: .semibold))
+            Text("Re-scan to read volume and SMART status.").font(.system(size: 12)).foregroundStyle(Tokens.text3)
+        }.frame(maxWidth: .infinity).padding(40)
+    }
+
+    private func errorState(_ message: String) -> some View {
+        VStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 28)).foregroundStyle(Tokens.warn)
+            Text("Disk health unavailable").font(.system(size: 13, weight: .semibold))
+            Text(message).font(.system(size: 12)).foregroundStyle(Tokens.text3).multilineTextAlignment(.center)
+        }.frame(maxWidth: .infinity).padding(40)
     }
 
     private func formatBytes(_ b: Int64) -> String {

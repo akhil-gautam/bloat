@@ -9,7 +9,10 @@ struct UpdaterScreen: View {
             header
             Divider()
             sourceBanner
-            if u.candidates.isEmpty && !u.scanning {
+            if let error = u.lastError { ActionError(message: error) }
+            if u.scanning && u.candidates.isEmpty {
+                loadingState
+            } else if u.candidates.isEmpty {
                 emptyState
             } else {
                 table
@@ -49,25 +52,25 @@ struct UpdaterScreen: View {
 
     @ViewBuilder
     private var sourceBanner: some View {
-        let labels: [(String, Bool)] = [
-            ("Homebrew", u.brewAvailable),
-            ("Mac App Store (mas-cli)", u.masAvailable),
-            ("Sparkle feeds", true),
+        let labels: [(String, UpdateSourceState)] = [
+            ("Homebrew", u.brewState),
+            ("Mac App Store (mas-cli)", u.masState),
+            ("Sparkle feeds", u.sparkleState),
         ]
         HStack(spacing: 14) {
-            ForEach(labels, id: \.0) { label, ok in
+            ForEach(labels, id: \.0) { label, sourceState in
                 HStack(spacing: 6) {
                     Circle()
-                        .fill(ok ? Tokens.good : Tokens.text4)
+                        .fill(sourceColor(sourceState))
                         .frame(width: 8, height: 8)
-                    Text(label).font(.system(size: 11)).foregroundStyle(Tokens.text2)
+                    Text("\(label) · \(sourceLabel(sourceState))").font(.system(size: 11)).foregroundStyle(Tokens.text2)
                 }
             }
-            if !u.brewAvailable {
+            if u.brewState == .unavailable {
                 Text("Install Homebrew to detect cask updates.")
                     .font(.system(size: 11)).foregroundStyle(Tokens.text3)
             }
-            if !u.masAvailable {
+            if u.masState == .unavailable {
                 Text("Install mas-cli (`brew install mas`) for Mac App Store updates.")
                     .font(.system(size: 11)).foregroundStyle(Tokens.text3)
             }
@@ -105,14 +108,42 @@ struct UpdaterScreen: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "checkmark.circle.fill")
+        let checked = [u.brewState, u.masState, u.sparkleState].contains(.available)
+        return VStack(spacing: 8) {
+            Image(systemName: checked ? "checkmark.circle.fill" : "questionmark.circle.fill")
                 .font(.system(size: 32))
-                .foregroundStyle(Tokens.good)
-            Text("Everything is up to date").font(.system(size: 13, weight: .semibold))
-            Text("Click Re-scan to check again.").font(.system(size: 12)).foregroundStyle(Tokens.text3)
+                .foregroundStyle(checked ? Tokens.good : Tokens.text3)
+            Text(checked ? "No updates found" : "No update source completed")
+                .font(.system(size: 13, weight: .semibold))
+            Text(checked ? "Checked available sources. Re-scan to check again." : "Review the source status above, then try again.")
+                .font(.system(size: 12)).foregroundStyle(Tokens.text3)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var loadingState: some View {
+        VStack(spacing: 8) {
+            ProgressView()
+            Text("Checking installed update sources…").font(.system(size: 12)).foregroundStyle(Tokens.text3)
+        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func sourceLabel(_ sourceState: UpdateSourceState) -> String {
+        switch sourceState {
+        case .checking: return "checking"
+        case .available: return "checked"
+        case .unavailable: return "not installed"
+        case .failed: return "failed"
+        }
+    }
+
+    private func sourceColor(_ sourceState: UpdateSourceState) -> Color {
+        switch sourceState {
+        case .checking: return state.accent.value
+        case .available: return Tokens.good
+        case .unavailable: return Tokens.text4
+        case .failed: return Tokens.danger
+        }
     }
 }
 

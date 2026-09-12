@@ -99,6 +99,15 @@ struct AppCacheEntry: Identifiable, Hashable {
     }
 }
 
+nonisolated enum DownloadOCRState: Equatable {
+    case unsupported
+    case idle
+    case loading
+    case text(String)
+    case noText
+    case failed(String)
+}
+
 // MARK: - Singleton
 
 @MainActor
@@ -113,7 +122,9 @@ final class LiveDownloadsCache: ObservableObject {
     @Published private(set) var lastError: String? = nil
     /// Per-URL OCR result for image downloads. Empty string = ran but no text found.
     @Published private(set) var ocr: [URL: String] = [:]
+    @Published private(set) var ocrStates: [URL: DownloadOCRState] = [:]
     private var ocrInFlight: Set<URL> = []
+    private var ocrTokens: [URL: UUID] = [:]
 
     var totalCount: Int { downloads.count + caches.count }
     var totalCacheBytes: Int64 { caches.reduce(0) { $0 + $1.sizeBytes } }
@@ -130,6 +141,7 @@ final class LiveDownloadsCache: ObservableObject {
     }
 
     private var task: Task<Void, Never>? = nil
+    private var scanGeneration = ScanGeneration()
 
     private init() {}
 
@@ -139,38 +151,62 @@ final class LiveDownloadsCache: ObservableObject {
 
     func scan() {
         cancel()
+        let generation = scanGeneration.next()
         scanning = true; downloads = []; caches = []
+        ocr = [:]; ocrStates = [:]; ocrInFlight = []; ocrTokens = [:]
         phase = "Scanning Downloads…"; progress = 0
-        task = Task.detached(priority: .userInitiated) { await Self.runScan() }
+        task = Task.detached(priority: .userInitiated) { await Self.runScan(generation: generation) }
     }
 
-    func cancel() { task?.cancel(); task = nil; scanning = false }
+    func cancel() {
+        _ = scanGeneration.next()
+        task?.cancel(); task = nil; scanning = false
+    }
 
     func revealInFinder(_ url: URL) { NSWorkspace.shared.activateFileViewerSelecting([url]) }
     func openInFinder(_ url: URL)   { NSWorkspace.shared.open(url) }
 
     // MARK: - Vision OCR (on-demand, cached)
 
-    static let ocrEligibleExtensions: Set<String> = ["png", "jpg", "jpeg", "heic", "heif", "tiff", "tif", "bmp", "webp", "gif"]
+    static let ocrEligibleExtensions = OCRPolicy.eligibleExtensions
+
+    func ocrState(for entry: DLEntry) -> DownloadOCRState {
+        guard entry.category == .media,
+              OCRPolicy.supports(fileExtension: entry.url.pathExtension, sizeBytes: entry.sizeBytes)
+        else { return .unsupported }
+        return ocrStates[entry.url] ?? .idle
+    }
 
     func ocrIfEligible(for entry: DLEntry) {
-        guard ocr[entry.url] == nil, !ocrInFlight.contains(entry.url) else { return }
+        guard ocrStates[entry.url] == nil, !ocrInFlight.contains(entry.url) else { return }
         guard entry.category == .media else { return }
-        let ext = entry.url.pathExtension.lowercased()
-        guard Self.ocrEligibleExtensions.contains(ext) else { return }
-        guard entry.sizeBytes <= 30_000_000 else { return }
+        guard OCRPolicy.supports(fileExtension: entry.url.pathExtension, sizeBytes: entry.sizeBytes) else {
+            ocrStates[entry.url] = .unsupported
+            return
+        }
         ocrInFlight.insert(entry.url)
+        ocrStates[entry.url] = .loading
         let url = entry.url
+        let token = UUID()
+        ocrTokens[url] = token
         Task.detached(priority: .utility) {
-            let text = Self.recognizeText(at: url) ?? ""
+            let state = Self.recognizeText(at: url)
             await MainActor.run {
-                LiveDownloadsCache.shared.ocrInFlight.remove(url)
-                LiveDownloadsCache.shared.ocr[url] = text
+                let live = LiveDownloadsCache.shared
+                guard live.ocrTokens[url] == token else { return }
+                live.ocrInFlight.remove(url)
+                live.ocrTokens[url] = nil
+                live.ocrStates[url] = state
+                switch state {
+                case .text(let text): live.ocr[url] = text
+                case .noText, .failed: live.ocr[url] = ""
+                default: break
+                }
             }
         }
     }
 
-    nonisolated private static func recognizeText(at url: URL) -> String? {
+    nonisolated private static func recognizeText(at url: URL) -> DownloadOCRState {
         let opts: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceShouldCacheImmediately: true,
@@ -179,34 +215,39 @@ final class LiveDownloadsCache: ObservableObject {
         ]
         guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
               let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary)
-        else { return nil }
+        else { return .failed("Could not read this image.") }
         let req = VNRecognizeTextRequest()
         req.recognitionLevel = .accurate
         req.usesLanguageCorrection = true
         let handler = VNImageRequestHandler(cgImage: cg, options: [:])
         do {
             try handler.perform([req])
-            let lines = req.results?.compactMap { ($0 as? VNRecognizedTextObservation)?.topCandidates(1).first?.string } ?? []
+            let lines = req.results?.compactMap { $0.topCandidates(1).first?.string } ?? []
             let joined = lines.joined(separator: " ")
             // Collapse whitespace
-            return joined.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
+            let text = joined.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? .noText : .text(text)
         } catch {
-            return nil
+            return .failed(error.localizedDescription)
         }
     }
 
     @discardableResult
     func trashDownloads(_ ids: Set<URL>) -> Int {
         let fm = FileManager.default
-        var n = 0
-        var bytes: Int64 = 0
-        for id in ids {
-            let size = downloads.first(where: { $0.id == id })?.sizeBytes ?? 0
-            if (try? fm.trashItem(at: id, resultingItemURL: nil)) != nil { n += 1; bytes += size }
+        lastError = nil
+        let candidates = downloads.filter { ids.contains($0.id) }
+            .map { CleanupCandidate(id: $0.id, url: $0.url, bytes: $0.sizeBytes) }
+        let outcome = CleanupSafety.performTrash(candidates) {
+            try fm.trashItem(at: $0, resultingItemURL: nil)
         }
-        downloads.removeAll { ids.contains($0.id) }
-        if n > 0 { CleanupLog.record(module: .downloads, itemCount: n, bytes: bytes) }
-        return n
+        downloads.removeAll { outcome.succeeded.contains($0.id) }
+        if !outcome.failures.isEmpty { lastError = outcome.failures.joined(separator: "\n") }
+        if !outcome.succeeded.isEmpty {
+            CleanupLog.record(module: .downloads, itemCount: outcome.succeeded.count, bytes: outcome.bytes)
+        }
+        return outcome.succeeded.count
     }
 
     /// Empties the contents of the chosen cache directories (keeps the dir itself so apps don't break).
@@ -215,36 +256,56 @@ final class LiveDownloadsCache: ObservableObject {
         let fm = FileManager.default
         var trashed = 0
         var bytes: Int64 = 0
+        var completed: Set<URL> = []
+        var failures: [String] = []
+        lastError = nil
         for id in ids {
-            // Approximate freed bytes from the cache entry's recorded total
-            let entryBytes = caches.first(where: { $0.id == id })?.sizeBytes ?? 0
-            guard let inside = try? fm.contentsOfDirectory(at: id, includingPropertiesForKeys: nil) else { continue }
-            var freedHere = 0
-            for child in inside {
-                if (try? fm.trashItem(at: child, resultingItemURL: nil)) != nil { trashed += 1; freedHere += 1 }
+            guard let entry = caches.first(where: { $0.id == id }) else { continue }
+            guard entry.safeToClean else {
+                failures.append("\(entry.displayName): this cache is marked Keep")
+                continue
             }
-            if freedHere > 0 { bytes += entryBytes }
+            let inside: [URL]
+            do {
+                inside = try fm.contentsOfDirectory(at: id, includingPropertiesForKeys: nil)
+            } catch {
+                failures.append("\(entry.displayName): \(error.localizedDescription)")
+                continue
+            }
+            let candidates = inside.map {
+                CleanupCandidate(id: $0, url: $0, bytes: Self.directorySize(at: $0))
+            }
+            let outcome = CleanupSafety.performTrash(candidates) {
+                try fm.trashItem(at: $0, resultingItemURL: nil)
+            }
+            trashed += outcome.succeeded.count
+            bytes += outcome.bytes
+            failures.append(contentsOf: outcome.failures)
+            if outcome.failures.isEmpty { completed.insert(id) }
         }
-        caches.removeAll { ids.contains($0.id) }
+        caches.removeAll { completed.contains($0.id) }
+        if !failures.isEmpty { lastError = failures.joined(separator: "\n") }
         if trashed > 0 { CleanupLog.record(module: .caches, itemCount: trashed, bytes: bytes) }
         return trashed
     }
 
     // MARK: - Scan worker
 
-    nonisolated private static func runScan() async {
-        await update(phase: "Scanning Downloads…", progress: 0.05)
+    nonisolated private static func runScan(generation: Int) async {
+        await update(phase: "Scanning Downloads…", progress: 0.05, generation: generation)
 
         // 1. Downloads folder
         let dl = await scanDownloads()
-        await publishDownloads(dl)
-        await update(phase: "Scanning app caches…", progress: 0.5)
+        guard !Task.isCancelled else { return }
+        await publishDownloads(dl, generation: generation)
+        await update(phase: "Scanning app caches…", progress: 0.5, generation: generation)
 
         // 2. ~/Library/Caches subdirectories
         let ch = await scanCaches()
-        await publishCaches(ch)
+        guard !Task.isCancelled else { return }
+        await publishCaches(ch, generation: generation)
 
-        await finish()
+        await finish(generation: generation)
     }
 
     nonisolated private static func scanDownloads() async -> [DLEntry] {
@@ -356,35 +417,48 @@ final class LiveDownloadsCache: ObservableObject {
         return .other
     }
 
-    nonisolated private static func update(phase: String, progress: Double) async {
+    nonisolated private static func update(phase: String, progress: Double, generation: Int) async {
         await MainActor.run {
-            LiveDownloadsCache.shared.phase = phase
-            LiveDownloadsCache.shared.progress = progress
+            let live = LiveDownloadsCache.shared
+            guard live.scanGeneration.accepts(generation) else { return }
+            live.phase = phase
+            live.progress = progress
         }
     }
-    nonisolated private static func publishDownloads(_ d: [DLEntry]) async {
-        await MainActor.run { LiveDownloadsCache.shared.downloads = d }
-    }
-    nonisolated private static func publishCaches(_ c: [AppCacheEntry]) async {
-        await MainActor.run { LiveDownloadsCache.shared.caches = c }
-    }
-    nonisolated private static func finish() async {
+    nonisolated private static func publishDownloads(_ d: [DLEntry], generation: Int) async {
         await MainActor.run {
-            LiveDownloadsCache.shared.scanning = false
-            LiveDownloadsCache.shared.phase = "Done"
-            LiveDownloadsCache.shared.progress = 1
+            let live = LiveDownloadsCache.shared
+            guard live.scanGeneration.accepts(generation) else { return }
+            live.downloads = d
+        }
+    }
+    nonisolated private static func publishCaches(_ c: [AppCacheEntry], generation: Int) async {
+        await MainActor.run {
+            let live = LiveDownloadsCache.shared
+            guard live.scanGeneration.accepts(generation) else { return }
+            live.caches = c
+        }
+    }
+    nonisolated private static func finish(generation: Int) async {
+        await MainActor.run {
+            let live = LiveDownloadsCache.shared
+            guard live.scanGeneration.accepts(generation) else { return }
+            live.scanning = false
+            live.task = nil
+            live.phase = "Done"
+            live.progress = 1
         }
     }
 }
 
 // MARK: - Curated registry of caches that are safe to wipe
 
-enum SafeCacheRegistry {
-    struct Match { let safe: Bool; let reason: String? }
+nonisolated enum SafeCacheRegistry {
+    nonisolated struct Match { let safe: Bool; let reason: String? }
 
     /// Patterns matched against the cache subdirectory name.
     /// Each entry: (matcher, displayName, safe-to-clean, reason).
-    private static let entries: [(prefix: String, name: String, safe: Bool, reason: String?)] = [
+    private nonisolated static let entries: [(prefix: String, name: String, safe: Bool, reason: String?)] = [
         ("com.apple.dt.Xcode",       "Xcode (DerivedData)", true,  "Xcode rebuilds these on the next build."),
         ("Homebrew",                 "Homebrew downloads",  true,  "Brew re-downloads bottles when needed."),
         ("Yarn",                     "Yarn",                 true,  "Yarn re-downloads packages on the next install."),
@@ -404,15 +478,14 @@ enum SafeCacheRegistry {
         ("com.apple",                "System (Apple)",       false, "Managed by macOS — let the system clean it."),
     ]
 
-    static func match(bundleID: String) -> Match {
+    nonisolated static func match(bundleID: String) -> Match {
         for e in entries where bundleID.lowercased().contains(e.prefix.lowercased()) {
             return Match(safe: e.safe, reason: e.reason)
         }
-        // Default: assume third-party app cache is safe to clean.
-        return Match(safe: true, reason: "App will rebuild this cache as needed.")
+        return Match(safe: false, reason: "Not in the curated safe-cache list; review before removing.")
     }
 
-    static func displayName(for bundleID: String) -> String? {
+    nonisolated static func displayName(for bundleID: String) -> String? {
         for e in entries where bundleID.lowercased().contains(e.prefix.lowercased()) { return e.name }
         return nil
     }

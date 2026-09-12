@@ -5,11 +5,11 @@ import Combine
 /// Lists every installed `.app` bundle the current user can see and computes
 /// the disk footprint of each app's leftover files in well-known
 /// `~/Library/...` locations. Uninstall trashes the app + all detected
-/// leftover paths atomically and logs the freed bytes to `CleanupLog`.
+/// leftover paths after the app bundle has safely moved to Trash.
 ///
-/// We deliberately key the leftover sweep off the bundle identifier (and the
-/// team identifier for group containers) rather than the display name — bundle
-/// IDs are stable and unambiguous, while display names collide and rename.
+/// We deliberately key the leftover sweep off the bundle identifier rather than
+/// the display name. Group containers are excluded because another app from the
+/// same developer may still own their contents.
 struct InstalledApp: Identifiable, Hashable {
     let id: URL                  // /Applications/Foo.app
     let bundleID: String         // com.example.foo  (or "" if the bundle had no Info.plist)
@@ -21,7 +21,7 @@ struct InstalledApp: Identifiable, Hashable {
     let leftovers: [URL]         // paths we'd sweep on uninstall — surfaced for transparency
     let isSandboxed: Bool        // contains ~/Library/Containers/<bundle-id>
 
-    var totalBytes: Int64 { appBytes + leftoverBytes }
+    nonisolated var totalBytes: Int64 { appBytes + leftoverBytes }
 }
 
 @MainActor
@@ -37,6 +37,7 @@ final class LiveUninstaller: ObservableObject {
     var totalBytes: Int64 { apps.reduce(0) { $0 + $1.totalBytes } }
 
     private var task: Task<Void, Never>? = nil
+    private var scanGeneration = ScanGeneration()
     private init() {}
 
     func startIfNeeded() {
@@ -45,65 +46,69 @@ final class LiveUninstaller: ObservableObject {
 
     func scan() {
         cancel()
+        let generation = scanGeneration.next()
         scanning = true; apps = []
         phase = "Enumerating installed apps…"; progress = 0
-        task = Task.detached(priority: .userInitiated) { await Self.runScan() }
+        task = Task.detached(priority: .userInitiated) { await Self.runScan(generation: generation) }
     }
 
     func cancel() {
+        _ = scanGeneration.next()
         task?.cancel(); task = nil; scanning = false
     }
 
     func revealInFinder(_ url: URL) { NSWorkspace.shared.activateFileViewerSelecting([url]) }
 
     /// Trash the listed apps along with every detected leftover path. Returns
-    /// (apps trashed, total bytes freed). Failures are surfaced via
+    /// (apps trashed, total bytes moved to Trash). Failures are surfaced via
     /// `lastError`; partial successes still write a CleanupLog entry.
     @discardableResult
     func uninstall(_ ids: Set<URL>) -> (Int, Int64) {
         let fm = FileManager.default
-        var apps = 0
+        var appCount = 0
         var bytes: Int64 = 0
         var failed: [String] = []
+        var removed: Set<URL> = []
+        lastError = nil
+        let runningBundles = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
         for id in ids {
             guard let app = self.apps.first(where: { $0.id == id }) else { continue }
-            // Trash leftovers first — if the app removal fails we still don't
-            // leave dangling support data behind.
-            for path in app.leftovers {
-                if let trashedSize = trashAndSize(path, fm: fm) {
-                    bytes += trashedSize
-                }
+            guard !runningBundles.contains(app.bundleID) else {
+                failed.append("\(app.displayName): quit the app before uninstalling")
+                continue
             }
-            // Then trash the app bundle itself.
-            do {
-                try fm.trashItem(at: app.id, resultingItemURL: nil)
-                apps += 1
-                bytes += app.appBytes
-            } catch {
-                failed.append("\(app.displayName): \(error.localizedDescription)")
+
+            let appOutcome = CleanupSafety.performTrash([
+                CleanupCandidate(id: app.id, url: app.id, bytes: app.appBytes),
+            ]) { try fm.trashItem(at: $0, resultingItemURL: nil) }
+            guard appOutcome.failures.isEmpty else {
+                failed.append(contentsOf: appOutcome.failures.map { "\(app.displayName): \($0)" })
+                continue
             }
+            appCount += 1
+            bytes += appOutcome.bytes
+            removed.insert(app.id)
+
+            let leftovers = app.leftovers.filter { !CleanupSafety.isSharedContainer($0) }.map {
+                CleanupCandidate(id: $0, url: $0, bytes: Self.directorySize($0))
+            }
+            let leftoverOutcome = CleanupSafety.performTrash(leftovers) {
+                try fm.trashItem(at: $0, resultingItemURL: nil)
+            }
+            bytes += leftoverOutcome.bytes
+            failed.append(contentsOf: leftoverOutcome.failures.map { "\(app.displayName): \($0)" })
         }
         if !failed.isEmpty { lastError = failed.joined(separator: "\n") }
-        self.apps.removeAll { ids.contains($0.id) }
-        if apps > 0 || bytes > 0 {
-            CleanupLog.record(module: .uninstaller, itemCount: apps, bytes: bytes)
+        self.apps.removeAll { removed.contains($0.id) }
+        if appCount > 0 {
+            CleanupLog.record(module: .uninstaller, itemCount: appCount, bytes: bytes)
         }
-        return (apps, bytes)
-    }
-
-    private nonisolated func trashAndSize(_ url: URL, fm: FileManager) -> Int64? {
-        let size = Self.directorySize(url)
-        do {
-            try fm.trashItem(at: url, resultingItemURL: nil)
-            return size
-        } catch {
-            return nil
-        }
+        return (appCount, bytes)
     }
 
     // MARK: - Scan implementation
 
-    private nonisolated static func runScan() async {
+    private nonisolated static func runScan(generation: Int) async {
         let fm = FileManager.default
         let appRoots: [URL] = [
             URL(fileURLWithPath: "/Applications"),
@@ -118,18 +123,24 @@ final class LiveUninstaller: ObservableObject {
         }
 
         let bundleCount = bundles.count
-        await MainActor.run { LiveUninstaller.shared.phase = "Inspecting \(bundleCount) apps…" }
+        await MainActor.run {
+            let live = LiveUninstaller.shared
+            guard live.scanGeneration.accepts(generation) else { return }
+            live.phase = "Inspecting \(bundleCount) apps…"
+        }
 
         var collected: [InstalledApp] = []
         for (i, app) in bundles.enumerated() {
-            if Task.isCancelled { break }
+            if Task.isCancelled { return }
             if let row = inspect(app: app) { collected.append(row) }
             if i % 5 == 0 {
                 let p = Double(i + 1) / Double(max(bundleCount, 1))
                 let appName = app.lastPathComponent
                 await MainActor.run {
-                    LiveUninstaller.shared.progress = p
-                    LiveUninstaller.shared.phase = "Inspecting \(appName)…"
+                    let live = LiveUninstaller.shared
+                    guard live.scanGeneration.accepts(generation) else { return }
+                    live.progress = p
+                    live.phase = "Inspecting \(appName)…"
                 }
             }
         }
@@ -140,10 +151,13 @@ final class LiveUninstaller: ObservableObject {
         let finalRows = collected
 
         await MainActor.run {
-            LiveUninstaller.shared.apps = finalRows
-            LiveUninstaller.shared.scanning = false
-            LiveUninstaller.shared.progress = 1
-            LiveUninstaller.shared.phase = "Done"
+            let live = LiveUninstaller.shared
+            guard live.scanGeneration.accepts(generation) else { return }
+            live.apps = finalRows
+            live.scanning = false
+            live.task = nil
+            live.progress = 1
+            live.phase = "Done"
         }
     }
 
@@ -204,10 +218,9 @@ final class LiveUninstaller: ObservableObject {
         return ""
     }
 
-    /// Well-known leftover-path patterns keyed by bundle id (and team id, for
-    /// group containers). Order is informational — caller filters out missing
-    /// entries.
-    private nonisolated static func leftoverPaths(bundleID: String, teamID: String) -> [URL] {
+    /// Well-known leftover-path patterns keyed by bundle id. Shared group
+    /// containers are deliberately excluded.
+    private nonisolated static func leftoverPaths(bundleID: String, teamID _: String) -> [URL] {
         let home = URL(fileURLWithPath: NSHomeDirectory())
         let lib  = home.appendingPathComponent("Library")
         var paths: [URL] = [
@@ -221,17 +234,8 @@ final class LiveUninstaller: ObservableObject {
             lib.appendingPathComponent("WebKit/\(bundleID)"),
             lib.appendingPathComponent("Containers/\(bundleID)"),
         ]
-        // Group containers — namespaced as <teamid>.<bundle-id>.* — glob if we have a team id.
-        if !teamID.isEmpty {
-            let groupRoot = lib.appendingPathComponent("Group Containers")
-            let prefix = "\(teamID).\(bundleID)"
-            if let entries = try? FileManager.default.contentsOfDirectory(at: groupRoot,
-                includingPropertiesForKeys: nil) {
-                for e in entries where e.lastPathComponent.hasPrefix(prefix) {
-                    paths.append(e)
-                }
-            }
-        }
+        // Group Containers may be shared by multiple apps from the same team.
+        // Never include them in automatic removal.
         // LaunchAgents named after the bundle (vendor-installed startup helpers).
         let agents = lib.appendingPathComponent("LaunchAgents")
         if let entries = try? FileManager.default.contentsOfDirectory(at: agents,

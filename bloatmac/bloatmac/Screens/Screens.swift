@@ -28,6 +28,7 @@ struct StorageScreen: View {
     var body: some View {
         ScreenScroll {
             header
+            ActionError(message: live.lastError)
             usedSummary
             HStack(alignment: .top, spacing: 16) {
                 storageMap.frame(maxWidth: .infinity)
@@ -55,7 +56,7 @@ struct StorageScreen: View {
                 Btn(label: live.calculating ? "Scanning…" : "Rescan", icon: "arrow.clockwise", style: .secondary) {
                     live.refresh()
                 }
-                Btn(label: "Clean up", icon: "trash", style: .primary) {}
+                Btn(label: "Review cleanup", icon: "tray.full", style: .primary) { state.goto(.downloads) }
             }
         }
         .padding(.bottom, 4)
@@ -112,8 +113,8 @@ struct StorageScreen: View {
                 }
                 Spacer()
                 VStack(alignment: .leading, spacing: 14) {
-                    StackedUsageBar(categories: live.categories, totalGB: live.totalGB, usedGB: live.usedGB)
-                    LegendGrid(categories: live.categories, freeGB: live.freeGB, calculating: live.calculating)
+                    StackedUsageBar(categories: live.displayCategories, totalGB: live.totalGB, usedGB: live.usedGB)
+                    LegendGrid(categories: live.displayCategories, freeGB: live.freeGB, calculating: live.calculating)
                 }
                 .frame(maxWidth: .infinity)
             }
@@ -134,7 +135,7 @@ struct StorageScreen: View {
                     }
                 }
                 Text("Storage map").font(.system(size: 14, weight: .bold))
-                Text(drillCategory == nil ? "Click a category to drill in" : "Showing \(drillCategory!.name)")
+                Text(drillCategory == nil ? "Known folders and unclassified usage" : "Showing \(drillCategory!.name)")
                     .font(.system(size: 12)).foregroundStyle(Tokens.text3)
                 Spacer()
                 LivePill(active: live.calculating)
@@ -143,7 +144,7 @@ struct StorageScreen: View {
             Group {
                 if let drill = drillCategory {
                     Treemap(items: live.apps.map { TreemapItem(id: $0.id, name: $0.name, size: $0.size, color: $0.color) },
-                            onSelect: { _ in drillCategory = nil })
+                            onSelect: { revealApplication(named: $0.name) })
                         .id("apps-\(drill.id)")
                 } else {
                     let items = tilesForMode()
@@ -162,6 +163,11 @@ struct StorageScreen: View {
                                         if let cat = live.categories.first(where: { $0.id == "apps" }) {
                                             withAnimation(.easeOut(duration: 0.25)) { drillCategory = cat }
                                         }
+                                    } else if mode == .categories {
+                                        let path = LiveStorage.categorySpec.first(where: { $0.id == item.id })?.paths.first ?? "/"
+                                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+                                    } else {
+                                        revealApplication(named: item.name)
                                     }
                                 })
                             .id("\(mode.rawValue)-root")
@@ -176,10 +182,18 @@ struct StorageScreen: View {
         .clipShape(RoundedRectangle(cornerRadius: Tokens.Radius.lg))
     }
 
+    private func revealApplication(named name: String) {
+        let roots = ["/Applications", "\(NSHomeDirectory())/Applications"]
+        let url = roots.map { URL(fileURLWithPath: $0).appendingPathComponent(name + ".app") }
+            .first { FileManager.default.fileExists(atPath: $0.path) }
+            ?? URL(fileURLWithPath: "/Applications")
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
     private func tilesForMode() -> [TreemapItem] {
         switch mode {
         case .categories:
-            return live.categories.filter { $0.status == .calculated && $0.size > 0.01 }
+            return live.displayCategories.filter { $0.status == .calculated && $0.size > 0.01 }
                 .map { TreemapItem(id: $0.id, name: $0.name, size: $0.size, color: $0.color) }
         case .applications:
             return live.apps.filter { $0.size > 0.01 }
@@ -200,8 +214,8 @@ struct StorageScreen: View {
         let cleanables = live.categories.filter { ["caches", "downloads", "trash"].contains($0.id) }
         VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Recoverable now").font(.system(size: 14, weight: .bold))
-                Text("Cleanable without losing anything").font(.system(size: 11.5)).foregroundStyle(Tokens.text3)
+                Text("Review cleanup candidates").font(.system(size: 14, weight: .bold))
+                Text("Includes personal downloads. Review before removing.").font(.system(size: 11.5)).foregroundStyle(Tokens.text3)
             }
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text(String(format: "%.1f", live.cleanableGB))
@@ -227,8 +241,10 @@ struct StorageScreen: View {
                 }
             }
 
-            Btn(label: live.cleanableGB > 0 ? "Free \(String(format: "%.1f GB", live.cleanableGB))" : "Free up",
-                icon: "sparkles", style: .primary) {}
+            Btn(label: "Review downloads & caches",
+                icon: "tray.full", style: .primary) { state.goto(.downloads) }
+            Text("Moving files to Trash does not release disk space until Trash is emptied. Other & unscanned includes macOS, snapshots, and folders not measured here; categories are estimates.")
+                .font(.system(size: 11)).foregroundStyle(Tokens.text3).fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity)
         }
         .padding(18)
@@ -242,10 +258,10 @@ struct StorageScreen: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("By category").font(.system(size: 14, weight: .bold))
             VStack(spacing: 10) {
-                ForEach(live.categories) { c in
+                ForEach(live.displayCategories) { c in
                     HStack(spacing: 10) {
                         Circle().fill(c.color).frame(width: 8, height: 8)
-                        Text(c.name).font(.system(size: 12.5, weight: .medium))
+                        Text(c.name + (c.incomplete ? " (partial)" : "")).font(.system(size: 12.5, weight: .medium))
                         Spacer()
                         if c.status == .calculating {
                             Text("Calculating…").font(.system(size: 11)).foregroundStyle(Tokens.text3)
@@ -304,7 +320,7 @@ struct LegendGrid: View {
     var body: some View {
         LazyVGrid(columns: cols, alignment: .leading, spacing: 8) {
             ForEach(categories) { c in
-                legendItem(color: c.color, name: c.name, size: c.size, calculating: c.status == .calculating)
+                legendItem(color: c.color, name: c.name + (c.incomplete ? " (partial)" : ""), size: c.size, calculating: c.status == .calculating)
             }
             legendItem(color: Tokens.catFree, name: "Free", size: freeGB, hollow: true, calculating: false)
         }
@@ -418,26 +434,27 @@ struct DashboardScreen: View {
                     .background(Capsule().fill(s.grade.color.opacity(0.18)))
                     .foregroundStyle(s.grade.color)
             }
-            ZStack {
-                HealthRing(score: s.overall, color: s.grade.color)
-                    .frame(width: 200, height: 200)
-                VStack(spacing: 0) {
-                    Text("\(s.asInt)")
-                        .font(.system(size: 52, weight: .heavy)).monospacedDigit()
-                        .contentTransition(.numericText(value: s.overall))
-                        .foregroundStyle(Tokens.text)
-                    Text("of 100")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(Tokens.text3)
+            HStack(spacing: 14) {
+                ZStack {
+                    HealthRing(score: s.overall, color: s.grade.color)
+                        .frame(width: 118, height: 118)
+                    VStack(spacing: 0) {
+                        Text("\(s.asInt)")
+                            .font(.system(size: 34, weight: .heavy)).monospacedDigit()
+                            .contentTransition(.numericText(value: s.overall))
+                            .foregroundStyle(Tokens.text)
+                        Text("of 100")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(Tokens.text3)
+                    }
                 }
-            }
-            .frame(maxWidth: .infinity)
-            VStack(spacing: 6) {
-                subScoreRow(label: "Storage", value: s.storage)
-                subScoreRow(label: "Memory",  value: s.memory)
-                if s.hasBattery { subScoreRow(label: "Battery", value: s.battery) }
-                subScoreRow(label: "Network", value: s.network)
-                subScoreRow(label: "Hygiene", value: s.hygiene)
+                VStack(spacing: 6) {
+                    subScoreRow(label: "Storage", value: s.storage)
+                    subScoreRow(label: "Memory",  value: s.memory)
+                    if s.hasBattery { subScoreRow(label: "Battery", value: s.battery) }
+                    subScoreRow(label: "Network", value: s.network)
+                    subScoreRow(label: "Hygiene", value: s.hygiene)
+                }
             }
         }
         .padding(16)
@@ -474,11 +491,12 @@ struct DashboardScreen: View {
                 Image(systemName: "sparkles").font(.system(size: 12, weight: .bold)).foregroundStyle(Tokens.purple)
                 Text("Briefing").font(.system(size: 11, weight: .bold)).tracking(0.6).foregroundStyle(Tokens.text4)
                 Spacer()
-                Text(live.briefingAuthor.uppercased())
+                Text(live.intelligenceStatus.label.uppercased())
                     .font(.system(size: 9, weight: .heavy)).tracking(0.5)
                     .padding(.horizontal, 5).padding(.vertical, 2)
                     .background(Capsule().fill(Tokens.purple.opacity(0.18)))
                     .foregroundStyle(Tokens.purple)
+                    .help(live.intelligenceStatus.detail)
             }
             Text(live.briefing.isEmpty ? "Computing…" : live.briefing)
                 .font(.system(size: 14, weight: .medium))
@@ -487,7 +505,6 @@ struct DashboardScreen: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .id(live.briefing)
                 .transition(.opacity)
-            Spacer(minLength: 0)
             if !live.recommendations.isEmpty {
                 HStack(spacing: 8) {
                     ForEach(live.recommendations.prefix(3)) { r in
@@ -506,7 +523,7 @@ struct DashboardScreen: View {
             }
         }
         .padding(16)
-        .frame(maxWidth: .infinity, minHeight: 240, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: 180, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 14).fill(Tokens.bgPanel))
         .overlay(RoundedRectangle(cornerRadius: 14).stroke(Tokens.border))
     }
@@ -599,11 +616,17 @@ struct DashboardScreen: View {
                 Text("LINEAR REGRESSION · ON DEVICE")
                     .font(.system(size: 9, weight: .heavy)).tracking(0.6).foregroundStyle(Tokens.text4)
             }
-            let cols = [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())]
-            LazyVGrid(columns: cols, alignment: .leading, spacing: 10) {
-                ForEach(live.forecasts) { f in
-                    Button { state.goto(f.target) } label: { forecastCard(f) }
-                        .buttonStyle(.plain)
+            if live.forecasts.isEmpty {
+                Text("Gathering enough samples to calculate a forecast.")
+                    .font(.system(size: 11)).foregroundStyle(Tokens.text3)
+                    .padding(.vertical, 12)
+            } else {
+                let cols = [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())]
+                LazyVGrid(columns: cols, alignment: .leading, spacing: 10) {
+                    ForEach(live.forecasts) { f in
+                        Button { state.goto(f.target) } label: { forecastCard(f) }
+                            .buttonStyle(.plain)
+                    }
                 }
             }
         }
@@ -619,9 +642,11 @@ struct DashboardScreen: View {
                 Text(f.label.uppercased())
                     .font(.system(size: 10, weight: .heavy)).tracking(0.6).foregroundStyle(Tokens.text4)
                 Spacer()
-                Text("\(Int((f.confidence*100).rounded()))%")
-                    .font(.system(size: 9, weight: .heavy)).foregroundStyle(Tokens.text4)
-                    .help("Forecast confidence (R²)")
+                if let confidence = f.confidence {
+                    Text("R² \(Int((confidence * 100).rounded()))%")
+                        .font(.system(size: 9, weight: .heavy)).foregroundStyle(Tokens.text4)
+                        .help("How closely the measured samples fit this trend")
+                }
             }
             Text(f.when)
                 .font(.system(size: 18, weight: .heavy))
@@ -637,9 +662,9 @@ struct DashboardScreen: View {
     private var trendsPanel: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("7-day trends").font(.system(size: 11, weight: .bold)).tracking(0.6).foregroundStyle(Tokens.text4)
+                Text("Recent trends").font(.system(size: 11, weight: .bold)).tracking(0.6).foregroundStyle(Tokens.text4)
                 Spacer()
-                Text("HOURLY BUCKETS · ON DEVICE")
+                Text("AVAILABLE HISTORY · ON DEVICE")
                     .font(.system(size: 9, weight: .heavy)).tracking(0.6).foregroundStyle(Tokens.text4)
             }
             if live.trends.isEmpty {
@@ -834,6 +859,7 @@ struct LargeFilesScreen: View {
     var body: some View {
         ScreenScroll {
             header
+            ActionError(message: live.lastError)
             if live.items.isEmpty && !live.scanning {
                 EmptyState(
                     icon: "doc.badge.ellipsis",
@@ -885,7 +911,7 @@ struct LargeFilesScreen: View {
                isPresented: $confirmTrash) {
             Button("Move to Trash", role: .destructive) {
                 let n = live.moveToTrash(selected)
-                selected.removeAll()
+                selected.formIntersection(Set(live.items.map(\.id)))
                 if n > 0 { LiveStorage.shared.refresh() }
             }
             Button("Cancel", role: .cancel) {}
@@ -948,7 +974,7 @@ struct LargeFilesScreen: View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Button { toggleSelectAll() } label: {
-                    AppCheckbox(on: !selected.isEmpty && selected.count == live.items.count)
+                    AppCheckbox(on: !selected.isEmpty && selected.count == live.items.count, label: "Select all large files")
                 }.buttonStyle(.plain).frame(width: 22)
                 Text("NAME").frame(maxWidth: .infinity, alignment: .leading)
                 Text("KIND").frame(width: 110, alignment: .leading)
@@ -993,7 +1019,7 @@ struct LargeFileRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Button { toggle() } label: { AppCheckbox(on: selected) }
+            Button { toggle() } label: { AppCheckbox(on: selected, label: "Select \(item.name)") }
                 .buttonStyle(.plain).frame(width: 22)
 
             VStack(alignment: .leading, spacing: 1) {
@@ -1039,6 +1065,7 @@ struct DuplicatesScreen: View {
     var body: some View {
         ScreenScroll {
             header
+            ActionError(message: live.lastError)
             if live.totalGroups == 0 && !live.scanning {
                 EmptyState(
                     icon: "doc.on.doc",
@@ -1073,7 +1100,7 @@ struct DuplicatesScreen: View {
             }
             Spacer()
             HStack(spacing: 8) {
-                Btn(label: "Smart pick", icon: "sparkles", style: .secondary) { live.smartPick() }
+                Btn(label: "Pick exact copies", icon: "sparkles", style: .secondary) { live.smartPick() }
                     .disabled(live.totalGroups == 0)
                 Btn(label: live.scanning ? "Scanning…" : "Rescan", icon: "arrow.clockwise", style: .secondary) { live.scan() }
                     .disabled(live.scanning)
@@ -1090,7 +1117,7 @@ struct DuplicatesScreen: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("\(live.totalRecoverableText) will be reclaimed. Items can be restored from Trash until you empty it.")
+            Text("\(live.totalRecoverableText) selected for Trash. Review similar images individually. Space is released only after Trash is emptied.")
         }
     }
 
@@ -1115,7 +1142,7 @@ struct DuplicatesScreen: View {
                 Text("\(Int(live.progress * 100))%").font(.system(size: 12, weight: .semibold)).monospacedDigit().foregroundStyle(Tokens.text3)
             }
             ThinBar(value: live.progress)
-            Text("Vision feature prints run on the GPU; large image libraries may take a minute.")
+            Text("Vision feature prints run on device; large image libraries may take a minute.")
                 .font(.system(size: 11)).foregroundStyle(Tokens.text3)
         }
         .padding(16)
@@ -1322,6 +1349,7 @@ struct UnusedScreen: View {
     var body: some View {
         ScreenScroll {
             header
+            ActionError(message: live.lastError)
             if live.totalCount == 0 && !live.scanning {
                 EmptyState(
                     icon: "clock.badge.questionmark",
@@ -1369,7 +1397,7 @@ struct UnusedScreen: View {
         .alert("Move \(selected.count) item(s) to Trash?", isPresented: $confirmTrash) {
             Button("Move to Trash", role: .destructive) {
                 let n = live.moveToTrash(selected)
-                selected.removeAll()
+                selected.formIntersection(Set((live.apps + live.files).map(\.id)))
                 if n > 0 { LiveStorage.shared.refresh() }
             }
             Button("Cancel", role: .cancel) {}
@@ -1381,7 +1409,7 @@ struct UnusedScreen: View {
     private var headerSubtitle: String {
         if live.scanning { return live.phase }
         if live.totalCount == 0 { return "" }
-        return "\(live.apps.count) apps · \(live.files.count) files & folders · \(live.totalText) reclaimable · older than \(live.thresholdDays) days"
+        return "\(live.apps.count) apps · \(live.files.count) files & folders · \(live.totalText) to review · older than \(live.thresholdDays) days"
     }
 
     private var thresholdMenu: some View {
@@ -1470,7 +1498,7 @@ struct UnusedScreen: View {
             VStack(spacing: 0) {
                 HStack(spacing: 8) {
                     Button { toggleSelectAll() } label: {
-                        AppCheckbox(on: !selected.isEmpty && selected.count == current.count)
+                        AppCheckbox(on: !selected.isEmpty && selected.count == current.count, label: "Select all visible items")
                     }.buttonStyle(.plain).frame(width: 22)
                     Text("NAME").frame(maxWidth: .infinity, alignment: .leading)
                     Text("LOCATION").frame(width: 200, alignment: .leading)
@@ -1534,7 +1562,7 @@ struct UnusedEntryRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Button { toggle() } label: { AppCheckbox(on: selected) }
+            Button { toggle() } label: { AppCheckbox(on: selected, label: "Select \(item.name)") }
                 .buttonStyle(.plain).frame(width: 22)
 
             HStack(spacing: 8) {
@@ -1594,6 +1622,7 @@ struct DownloadsCacheScreen: View {
     var body: some View {
         ScreenScroll {
             header
+            ActionError(message: live.lastError)
             if live.totalCount == 0 && !live.scanning {
                 EmptyState(
                     icon: "arrow.down.circle",
@@ -1644,7 +1673,7 @@ struct DownloadsCacheScreen: View {
         .padding(.bottom, 4)
         .alert("Move \(selectedDownloads.count) item(s) to Trash?", isPresented: $confirmTrash) {
             Button("Move to Trash", role: .destructive) {
-                let n = live.trashDownloads(selectedDownloads); selectedDownloads.removeAll()
+                let n = live.trashDownloads(selectedDownloads); selectedDownloads.formIntersection(Set(live.downloads.map(\.id)))
                 if n > 0 { LiveStorage.shared.refresh() }
             }
             Button("Cancel", role: .cancel) {}
@@ -1652,7 +1681,7 @@ struct DownloadsCacheScreen: View {
         .alert("Empty \(selectedCaches.count) cache director\(selectedCaches.count > 1 ? "ies" : "y")?",
                isPresented: $confirmCleanCache) {
             Button("Clean", role: .destructive) {
-                let n = live.cleanCaches(selectedCaches); selectedCaches.removeAll()
+                let n = live.cleanCaches(selectedCaches); selectedCaches.formIntersection(Set(live.caches.map(\.id)))
                 if n > 0 { LiveStorage.shared.refresh() }
             }
             Button("Cancel", role: .cancel) {}
@@ -1724,7 +1753,7 @@ struct DownloadsCacheScreen: View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Button { toggleSelectAllDownloads() } label: {
-                    AppCheckbox(on: !selectedDownloads.isEmpty && selectedDownloads.count == filteredDownloads.count)
+                    AppCheckbox(on: !selectedDownloads.isEmpty && selectedDownloads.count == filteredDownloads.count, label: "Select all visible downloads")
                 }.buttonStyle(.plain).frame(width: 22)
                 Text("NAME").frame(maxWidth: .infinity, alignment: .leading)
                 Text("FROM").frame(width: 160, alignment: .leading)
@@ -1817,7 +1846,7 @@ struct DownloadsCacheScreen: View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Button { toggleSelectAllCaches() } label: {
-                    AppCheckbox(on: !selectedCaches.isEmpty && selectedCaches.count == live.caches.count)
+                    AppCheckbox(on: !selectedCaches.isEmpty && selectedCaches.count == live.caches.filter(\.safeToClean).count, label: "Select all eligible caches")
                 }.buttonStyle(.plain).frame(width: 22)
                 Text("APP / SOURCE").frame(maxWidth: .infinity, alignment: .leading)
                 Text("LAST WRITE").frame(width: 110, alignment: .trailing)
@@ -1862,19 +1891,31 @@ struct DownloadRow: View {
     @ObservedObject private var live = LiveDownloadsCache.shared
     @EnvironmentObject private var state: AppState
 
+    private var ocrState: DownloadOCRState { live.ocrState(for: item) }
     private var isOCREligible: Bool {
-        item.category == .media &&
-        LiveDownloadsCache.ocrEligibleExtensions.contains(item.url.pathExtension.lowercased())
+        if case .unsupported = ocrState { return false }
+        return true
     }
     private var ocrText: String? {
-        guard let t = live.ocr[item.url], !t.isEmpty else { return nil }
-        return t
+        if case .text(let text) = ocrState { return text }
+        return nil
     }
-    private var ocrLoading: Bool { isOCREligible && live.ocr[item.url] == nil }
+    private var ocrLoading: Bool {
+        switch ocrState { case .idle, .loading: return true; default: return false }
+    }
+    private var ocrMessage: String? {
+        switch ocrState {
+        case .noText: return "No text found"
+        case .failed(let reason): return "Text recognition failed: \(reason)"
+        case .unsupported:
+            return LiveDownloadsCache.ocrEligibleExtensions.contains(item.url.pathExtension.lowercased()) ? "Text recognition supports images up to 30 MB" : nil
+        default: return nil
+        }
+    }
 
     var body: some View {
         HStack(spacing: 8) {
-            Button { toggle() } label: { AppCheckbox(on: selected) }
+            Button { toggle() } label: { AppCheckbox(on: selected, label: "Select \(item.name)") }
                 .buttonStyle(.plain).frame(width: 22)
 
             HStack(spacing: 8) {
@@ -1909,8 +1950,11 @@ struct DownloadRow: View {
                         } else if ocrLoading {
                             HStack(spacing: 4) {
                                 ProgressView().controlSize(.mini).scaleEffect(0.55)
-                                Text("Reading text…").font(.system(size: 10)).italic().foregroundStyle(Tokens.text4)
+                                Text("Reading text…").font(.system(size: 10)).foregroundStyle(Tokens.text3)
                             }
+                        } else if let message = ocrMessage {
+                            Text(message).font(.system(size: 10)).foregroundStyle(Tokens.text3)
+                                .lineLimit(1).help(message)
                         }
                     }
                 }
@@ -2011,7 +2055,7 @@ struct CacheRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Button { toggle() } label: { AppCheckbox(on: selected) }
+            Button { toggle() } label: { AppCheckbox(on: selected, label: "Select \(item.displayName)") }
                 .buttonStyle(.plain).frame(width: 22)
                 .opacity(item.safeToClean ? 1 : 0.4)
                 .disabled(!item.safeToClean)
@@ -2645,6 +2689,7 @@ private struct ProcessRow: View {
                                 .frame(width: 22, height: 22)
                                 .background(RoundedRectangle(cornerRadius: 5).fill(Tokens.bgPanel2))
                         }.buttonStyle(.plain).help("Reveal in Finder")
+                            .accessibilityLabel("Reveal \(proc.name) in Finder")
                     }
                     Button(action: onKill) {
                         Image(systemName: "xmark").font(.system(size: 10, weight: .bold))
@@ -2652,6 +2697,7 @@ private struct ProcessRow: View {
                             .frame(width: 22, height: 22)
                             .background(RoundedRectangle(cornerRadius: 5).fill(Tokens.danger.opacity(hover ? 1 : 0.85)))
                     }.buttonStyle(.plain).help("Quit process")
+                        .accessibilityLabel("Quit \(proc.name), process \(proc.id)")
                 }
             }
             .frame(width: 70, alignment: .trailing)
@@ -2672,6 +2718,7 @@ struct StartupScreen: View {
     var body: some View {
         ScreenScroll {
             header
+            ActionError(message: live.lastError)
             summaryRow
             scopeChips
             HStack(spacing: 10) {
@@ -3533,7 +3580,7 @@ struct BatteryScreen: View {
     private var topConsumersPanel: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Top energy users").font(.system(size: 11, weight: .bold)).tracking(0.6).foregroundStyle(Tokens.text4)
+                Text("Top CPU users").font(.system(size: 11, weight: .bold)).tracking(0.6).foregroundStyle(Tokens.text4)
                 Spacer()
                 Text(live.state == .discharging ? "live" : "charging — paused")
                     .font(.system(size: 10.5, weight: .medium))
@@ -4125,7 +4172,7 @@ struct NetworkScreen: View {
         let rows = live.filteredTalkers
         return VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
-                Text("Top talkers").font(.system(size: 11, weight: .bold)).tracking(0.6).foregroundStyle(Tokens.text4)
+                Text("Top talkers · process totals").font(.system(size: 11, weight: .bold)).tracking(0.6).foregroundStyle(Tokens.text4)
                 Spacer()
                 searchField
             }
@@ -4475,7 +4522,7 @@ struct AnalyticsScreen: View {
         bcf.allowedUnits = [.useGB, .useMB]; bcf.countStyle = .file
         let cleaned = bcf.string(fromByteCount: live.totalCleanedBytes)
         let hours = String(format: "%.1f", live.totalActiveHours)
-        return "Range: \(live.range.label) · \(cleaned) freed by BloatMac · \(hours) active hours"
+        return "Selected \(live.range.label) · \(live.observedCoverage) · \(cleaned) moved to Trash · \(hours) observed active hours"
     }
 
     private var rangePicker: some View {
@@ -4506,15 +4553,14 @@ struct AnalyticsScreen: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Image(systemName: "sparkles").font(.system(size: 12, weight: .bold)).foregroundStyle(Tokens.purple)
-                Text("Long-term summary").font(.system(size: 11, weight: .bold)).tracking(0.6).foregroundStyle(Tokens.text4)
+                Text("Measured summary").font(.system(size: 11, weight: .bold)).tracking(0.6).foregroundStyle(Tokens.text4)
                 Spacer()
-                if !live.summaryAuthor.isEmpty {
-                    Text(live.summaryAuthor.uppercased())
-                        .font(.system(size: 9, weight: .heavy)).tracking(0.5)
-                        .padding(.horizontal, 5).padding(.vertical, 2)
-                        .background(Capsule().fill(Tokens.purple.opacity(0.18)))
-                        .foregroundStyle(Tokens.purple)
-                }
+                Text(live.intelligenceStatus.label.uppercased())
+                    .font(.system(size: 9, weight: .heavy)).tracking(0.5)
+                    .padding(.horizontal, 5).padding(.vertical, 2)
+                    .background(Capsule().fill(Tokens.purple.opacity(0.18)))
+                    .foregroundStyle(Tokens.purple)
+                    .help(live.intelligenceStatus.detail)
             }
             Text(live.summary.isEmpty ? "Loading…" : live.summary)
                 .font(.system(size: 13, weight: .medium)).foregroundStyle(Tokens.text)
@@ -4572,8 +4618,14 @@ struct AnalyticsScreen: View {
                     chartLegend(metric: s.metric, peak: s.peak)
                 }
             }
-            OverlayChart(primary: live.primarySeries, secondary: live.secondarySeries)
-                .frame(height: 220)
+            if live.primarySeries == nil && live.secondarySeries == nil {
+                Text("Gathering enough samples to draw this chart.")
+                    .font(.system(size: 11)).foregroundStyle(Tokens.text3)
+                    .frame(maxWidth: .infinity, minHeight: 180, alignment: .center)
+            } else {
+                OverlayChart(primary: live.primarySeries, secondary: live.secondarySeries)
+                    .frame(height: 220)
+            }
         }
         .padding(16)
         .background(RoundedRectangle(cornerRadius: 14).fill(Tokens.bgPanel))
@@ -4646,7 +4698,7 @@ struct AnalyticsScreen: View {
             HStack {
                 Text("Window comparison").font(.system(size: 11, weight: .bold)).tracking(0.6).foregroundStyle(Tokens.text4)
                 Spacer()
-                Text("vs prior \(live.range.label.lowercased())")
+                Text(live.range == .all ? "Choose a fixed range to compare" : "vs prior \(live.range.label.lowercased())")
                     .font(.system(size: 10, weight: .heavy)).foregroundStyle(Tokens.text4)
             }
             if live.deltas.isEmpty {
@@ -4700,10 +4752,16 @@ struct AnalyticsScreen: View {
                 Spacer()
                 Text("Mon-Sun · 24h grid").font(.system(size: 10, weight: .heavy)).foregroundStyle(Tokens.text4)
             }
-            let cols = [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())]
-            LazyVGrid(columns: cols, spacing: 12) {
-                ForEach(live.heatmaps.indices, id: \.self) { i in
-                    HeatmapTile(map: live.heatmaps[i])
+            if live.heatmaps.isEmpty {
+                Text("Gathering enough samples to build time-of-day patterns.")
+                    .font(.system(size: 11)).foregroundStyle(Tokens.text3)
+                    .padding(.vertical, 12)
+            } else {
+                let cols = [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())]
+                LazyVGrid(columns: cols, spacing: 12) {
+                    ForEach(live.heatmaps.indices, id: \.self) { i in
+                        HeatmapTile(map: live.heatmaps[i])
+                    }
                 }
             }
         }
@@ -4720,10 +4778,16 @@ struct AnalyticsScreen: View {
                 Text("Distributions").font(.system(size: 11, weight: .bold)).tracking(0.6).foregroundStyle(Tokens.text4)
                 Spacer()
             }
-            let cols = [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())]
-            LazyVGrid(columns: cols, spacing: 12) {
-                ForEach(live.histograms.indices, id: \.self) { i in
-                    HistogramTile(hist: live.histograms[i])
+            if live.histograms.isEmpty {
+                Text("Gathering enough samples to build distributions.")
+                    .font(.system(size: 11)).foregroundStyle(Tokens.text3)
+                    .padding(.vertical, 12)
+            } else {
+                let cols = [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())]
+                LazyVGrid(columns: cols, spacing: 12) {
+                    ForEach(live.histograms.indices, id: \.self) { i in
+                        HistogramTile(hist: live.histograms[i])
+                    }
                 }
             }
         }
@@ -4743,7 +4807,7 @@ struct AnalyticsScreen: View {
                     .font(.system(size: 11, weight: .heavy)).monospacedDigit().foregroundStyle(Tokens.text2)
             }
             if live.cleanupHistory.isEmpty {
-                Text("No cleanups recorded in this range yet — items removed via BloatMac will appear here.")
+                Text("No cleanup actions recorded in this range yet — items moved to Trash by BloatMac will appear here.")
                     .font(.system(size: 11)).foregroundStyle(Tokens.text3)
                     .padding(.vertical, 16)
             } else {
@@ -5038,6 +5102,7 @@ private struct SessionChart: View {
 
 struct SettingsScreen: View {
     @EnvironmentObject var state: AppState
+    @ObservedObject private var dashboard = LiveDashboard.shared
 
     var body: some View {
         ScrollView {
@@ -5045,6 +5110,7 @@ struct SettingsScreen: View {
                 title
                 appearanceSection
                 generalSection
+                intelligenceSection
                 permissionsSection
                 aboutSection
             }
@@ -5053,6 +5119,7 @@ struct SettingsScreen: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Tokens.bgWindow)
+        .onAppear { dashboard.refreshIntelligenceReadiness() }
     }
 
     // MARK: Title
@@ -5090,6 +5157,8 @@ struct SettingsScreen: View {
                         }
                         .buttonStyle(.plain)
                         .help(k.rawValue.capitalized)
+                        .accessibilityLabel(k.rawValue.capitalized + " accent")
+                        .accessibilityAddTraits(state.accent == k ? .isSelected : [])
                     }
                 }
             }
@@ -5102,16 +5171,28 @@ struct SettingsScreen: View {
         section("General") {
             settingsRow(label: "Menu bar widget",
                         sublabel: "Quick storage / RAM / network in your menu bar.") {
-                Toggle("", isOn: $state.menubarWidgetEnabled)
+                Toggle("Menu bar widget", isOn: $state.menubarWidgetEnabled)
                     .labelsHidden().toggleStyle(.switch)
             }
             divider
             settingsRow(label: "Onboarding",
-                        sublabel: "Replay the welcome scan animation.") {
+                        sublabel: "Replay the welcome tour. No files are changed.") {
                 Button("Replay") { state.replayOnboarding() }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
             }
+        }
+    }
+
+    private var intelligenceSection: some View {
+        section("On-device intelligence") {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(dashboard.intelligenceReadiness.label).font(.system(size: 13, weight: .semibold))
+                Text(dashboard.intelligenceReadiness.detail).font(.system(size: 12)).foregroundStyle(Tokens.text3)
+                Text("Briefings use measured facts. Image text and similarity use Apple Vision. No cloud AI service is used.")
+                    .font(.system(size: 12)).foregroundStyle(Tokens.text3)
+                Button("Open Dashboard") { state.goto(.dashboard) }.controlSize(.small)
+            }.frame(maxWidth: .infinity, alignment: .leading).padding(16)
         }
     }
 
@@ -5120,9 +5201,7 @@ struct SettingsScreen: View {
     private var permissionsSection: some View {
         section("Permissions") {
             settingsRow(label: "Full Disk Access",
-                        sublabel: state.needsFDA
-                            ? "Not granted — some scans run with reduced detail."
-                            : "Granted. BloatMac can read protected user dirs.") {
+                        sublabel: state.fullDiskAccess == true ? "Protected folders are readable." : state.fullDiskAccess == false ? "Access is restricted — some scans run with reduced detail." : "Not verified — no populated protected folder could be checked.") {
                 HStack(spacing: 8) {
                     Button("Re-check") { state.refreshPermissions() }
                         .buttonStyle(.bordered).controlSize(.small)

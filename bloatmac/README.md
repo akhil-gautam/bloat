@@ -8,16 +8,22 @@ Native macOS SwiftUI cleanup + maintenance app. CleanMyMac-class feature surface
 brew install --cask akhil-gautam/tap/bloatmac
 ```
 
+Or install without Homebrew:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/akhil-gautam/bloat/main/install.sh | bash -s -- --app
+```
+
 Or grab the `.dmg` from the [releases page](https://github.com/akhil-gautam/bloat/releases) (tags starting with `bloatmac-v…`).
 
 Releases are **Developer ID signed and Apple-notarized** — Gatekeeper opens the app cleanly, no quarantine workaround needed.
 
-Requires macOS 26 (Tahoe) — the dashboard's AI briefing uses Foundation Models when available and degrades to a deterministic heuristic briefing on older releases.
+Requires macOS 26.2 (Tahoe). Dashboard and Analytics use Foundation Models to rank measured facts when Apple Intelligence is available, with deterministic summaries when it is unavailable.
 
 ## Modules
 
 **Sidebar / Overview**
-- **Smart Care** — one-click scan that sequences storage refresh, cache scan, duplicate hashing, startup audit, and memory snapshot, then surfaces a consolidated reclaimable-bytes total + actionable recommendations
+- **Smart Care** — one-click scan that sequences storage refresh, cache scan, duplicate hashing, startup audit, and memory snapshot, then surfaces review candidates and actionable recommendations without deleting files
 - **Dashboard** — health score from live subsystems, AI-generated briefing on macOS 26+
 - **Analytics** — 30-day history (memory pressure, network, battery, storage trends), CSV export
 
@@ -27,7 +33,7 @@ Requires macOS 26 (Tahoe) — the dashboard's AI briefing uses Foundation Models
 - **Duplicates** — exact (SHA-256) + visually-similar images (Vision feature print clustering)
 - **Unused & old** — apps + files filtered by Spotlight `kMDItemLastUsedDate` / access time
 - **Downloads & cache** — auto-categorized downloads, curated safe-cache registry across 20+ apps
-- **Uninstaller** — sweeps all leftover paths (Application Support, Caches, Preferences, Saved State, LaunchAgents, Containers, Group Containers) keyed off bundle id + team id
+- **Uninstaller** — sweeps all leftover paths (Application Support, Caches, Preferences, Saved State, LaunchAgents, Containers) keyed off bundle id + team id; shared group containers are preserved
 - **Updater** — surfaces updates from Homebrew casks, Mac App Store (mas-cli), and Sparkle feeds; one-click update routes to the right tool
 - **System junk** — Xcode DerivedData / iOS DeviceSupport / archives, iOS device backups, Mail attachments, Photos thumbnails, Time Machine local APFS snapshots, broken login items
 - **Privacy** — browser data wipe (Chrome / Edge / Brave / Arc / Safari / Firefox) + chat-app caches; refuses while target app is running to avoid corrupting open SQLite journals
@@ -39,7 +45,7 @@ Requires macOS 26 (Tahoe) — the dashboard's AI briefing uses Foundation Models
 - **Battery** — IOKit `AppleSmartBattery` health, cycles, predicted time-to-empty via vDSP regression on 30-day SQLite history
 - **Network** — interface rates, Wi-Fi (SSID/BSSID/channel/RSSI), top talkers via `nettop`
 - **Maintenance** — DNS flush, RAM purge, periodic scripts, Spotlight reindex, Launch Services rebuild, volume verify; root actions escalate via single OS auth prompt
-- **Schedules** — recurring Smart Care runs (hourly / daily / weekly), `UNUserNotificationCenter` notification when reclaimable bytes cross threshold
+- **Schedules** — scan-only Smart Care runs while the app is open (hourly / daily / weekly), with notifications when review candidates cross the threshold
 - **Disk health** — capacity per APFS volume, SMART status, encryption state, local snapshot count
 - **Permissions** — TCC audit grouping installed apps by declared usage descriptions; deep-links to System Settings panes for system-managed grants (Full Disk Access, Screen Recording, Accessibility, Automation, Input Monitoring)
 
@@ -64,7 +70,7 @@ bloatmac/
   Models/                 # Live* (real detection / actions) + CleanupLog SQLite
   Components/             # Donut, Sparkline, LiveAreaGraph, Treemap, Ring, etc.
   Shell/                  # Sidebar, Topbar, DesktopBackground, StatusItemController
-  Screens/                # 19 screens (one per sidebar entry)
+  Screens/                # 23 screens (one per sidebar entry)
   Overlays/               # NotifPanel, MenuBarWidgetPopover, Onboarding, PermissionsGate
 ```
 
