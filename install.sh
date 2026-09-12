@@ -125,27 +125,48 @@ ditto -x -k "$WORK_DIR/$ARCHIVE" "$WORK_DIR/extract"
 APP="$WORK_DIR/extract/BloatMac.app"
 PLIST="$APP/Contents/Info.plist"
 [ -f "$PLIST" ] || die "Archive does not contain BloatMac.app"
+[ "$(plutil -extract CFBundleIdentifier raw -o - "$PLIST")" = "akhilgautam123.bloatmac" ] || die "Unexpected BloatMac bundle identifier"
 MIN="$(plutil -extract LSMinimumSystemVersion raw -o - "$PLIST")"
 version_ge "$MIN" 26.2 || die "Unexpected deployment target: $MIN"
 version_ge "$HOST_VERSION" "$MIN" || die "BloatMac requires macOS $MIN"
 EXE="$(plutil -extract CFBundleExecutable raw -o - "$PLIST")"
 has_arch "$APP/Contents/MacOS/$EXE" || die "BloatMac does not support $ARCH"
 codesign --verify --deep --strict --verbose=2 "$APP"
-spctl --assess --type execute --verbose=2 "$APP"
 SIG="$(codesign --display --verbose=4 "$APP" 2>&1)"
 echo "$SIG" | grep -Fxq "Identifier=akhilgautam123.bloatmac" || die "Unexpected BloatMac bundle identifier"
-echo "$SIG" | grep -Fxq "TeamIdentifier=NCLSWS8Y8K" || die "Unexpected Developer ID team"
+TEAM="$(echo "$SIG" | awk -F= '$1=="TeamIdentifier" {print $2; exit}')"
+SIGNATURE="$(echo "$SIG" | awk -F= '$1=="Signature" {print $2; exit}')"
+if [ "$SIGNATURE" = adhoc ] && { [ -z "$TEAM" ] || [ "$TEAM" = "not set" ]; }; then
+  :
+elif [ "$TEAM" != NCLSWS8Y8K ]; then
+  die "Unexpected BloatMac signing identity"
+fi
+GATEKEEPER_APPROVAL=0
+if ! spctl --assess --type execute --verbose=2 "$APP"; then
+  GATEKEEPER_APPROVAL=1
+  echo "BloatMac is validly signed but not approved by Gatekeeper; first-launch approval will be required."
+fi
 
-DEST=/Applications/BloatMac.app
-STAGE="/Applications/.BloatMac.install.$$"
-BACKUP="/Applications/.BloatMac.backup.$$"
+APPLICATIONS_DIR=/Applications
+if [ -n "${BLOAT_INSTALL_TEST_APPLICATIONS_DIR:-}" ]; then
+  case "$API_URL" in file://*) ;; *) die "Test application directory requires a local fixture URL";; esac
+  case "$BLOAT_INSTALL_TEST_APPLICATIONS_DIR" in /tmp/*|/private/tmp/*) ;; *) die "Test application directory must be under /tmp";; esac
+  APPLICATIONS_DIR="${BLOAT_INSTALL_TEST_APPLICATIONS_DIR%/}"
+fi
+app_install() { if [ -n "${BLOAT_INSTALL_TEST_APPLICATIONS_DIR:-}" ]; then "$@"; else as_root "$@"; fi; }
+DEST="$APPLICATIONS_DIR/BloatMac.app"
+STAGE="$APPLICATIONS_DIR/.BloatMac.install.$$"
+BACKUP="$APPLICATIONS_DIR/.BloatMac.backup.$$"
 [ ! -e "$STAGE" ] && [ ! -e "$BACKUP" ] || die "Temporary install path exists; retry"
-as_root ditto "$APP" "$STAGE"
-as_root codesign --verify --deep --strict "$STAGE" || { as_root rm -rf "$STAGE"; die "Staged signature check failed"; }
-[ ! -e "$DEST" ] || as_root mv "$DEST" "$BACKUP"
-if ! as_root mv "$STAGE" "$DEST"; then
-  [ ! -e "$BACKUP" ] || as_root mv "$BACKUP" "$DEST"
+app_install ditto "$APP" "$STAGE"
+app_install codesign --verify --deep --strict "$STAGE" || { app_install rm -rf "$STAGE"; die "Staged signature check failed"; }
+[ ! -e "$DEST" ] || app_install mv "$DEST" "$BACKUP"
+if ! app_install mv "$STAGE" "$DEST"; then
+  [ ! -e "$BACKUP" ] || app_install mv "$BACKUP" "$DEST"
   die "Install failed; the previous app was restored"
 fi
-[ ! -e "$BACKUP" ] || as_root rm -rf "$BACKUP"
+[ ! -e "$BACKUP" ] || app_install rm -rf "$BACKUP"
 echo "BloatMac $TAG installed at $DEST"
+if [ "$GATEKEEPER_APPROVAL" -eq 1 ]; then
+  echo "First launch: try opening BloatMac, then use System Settings > Privacy & Security > Open Anyway and confirm Open."
+fi

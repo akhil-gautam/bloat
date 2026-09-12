@@ -55,11 +55,11 @@ Without Homebrew:
 curl -fsSL https://raw.githubusercontent.com/akhil-gautam/bloat/main/install.sh | bash -s -- --app
 ```
 
-The shell installer verifies the release checksum and Apple's app signature before installing.
+The shell installer verifies the release checksum, bundle identity, macOS and CPU compatibility, and code-signature integrity before installing.
 
 Or grab the `.dmg` from the [releases page](https://github.com/akhil-gautam/bloat/releases) (tags starting with `bloatmac-v…`).
 
-Releases are **Developer ID signed and Apple-notarized** — Gatekeeper opens cleanly, no quarantine workaround.
+Releases are ad-hoc signed for integrity and are not Apple-notarized; the signature does not verify the publisher. On first launch, try opening BloatMac, then go to System Settings → Privacy & Security, scroll to Security, and click Open Anyway. Authenticate and confirm Open once for that installation.
 
 Requires macOS 26.2 (Tahoe). Dashboard and Analytics use Foundation Models to rank measured facts when Apple Intelligence is available, with deterministic summaries when it is unavailable.
 

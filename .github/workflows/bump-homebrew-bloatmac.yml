@@ -100,7 +100,8 @@ jobs:
 
           - version: \`${VERSION}\`
           - sha256: \`${{ steps.sha.outputs.sha256 }}\`
-          - url: ${{ steps.ver.outputs.url }}"
+          - url: ${{ steps.ver.outputs.url }}
+          - signing: ad-hoc; users approve first launch in Privacy & Security > Open Anyway"
           else
             echo "PR already open for $BRANCH"
           fi

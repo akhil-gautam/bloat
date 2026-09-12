@@ -203,8 +203,8 @@ cache purges, privacy wipes, uninstallers, or admin maintenance as a smoke test.
   ownership, and actual sample coverage. Never display unvalidated generated
   quantitative advice. Fallback does not lower the deployment target.
 - Release workflows are separate: `.github/workflows/release.yml` handles CLI
-  `v[0-9]*` tags; `release-bloatmac.yml` handles `bloatmac-v*` tags and app
-  signing/notarization. `bump-homebrew-bloatmac.yml` opens a cask-update PR in the
+  `v[0-9]*` tags; `release-bloatmac.yml` handles `bloatmac-v*` tags and produces a
+  universal ad-hoc-signed, unnotarized app. `bump-homebrew-bloatmac.yml` opens a cask-update PR in the
   external tap; `Casks/bloatmac.rb` is the in-repo template. Do not cross the tag or
   artifact naming schemes when changing release tooling.
 
