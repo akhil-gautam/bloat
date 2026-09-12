@@ -67,8 +67,23 @@ jobs:
           src = p.read_text()
           src = re.sub(r'^(\s*version\s+)"[^"]*"', rf'\g<1>"{os.environ["VERSION"]}"', src, count=1, flags=re.M)
           src = re.sub(r'^(\s*sha256\s+)"[^"]*"', rf'\g<1>"{os.environ["SHA256"]}"', src, count=1, flags=re.M)
+          caveats = (
+              '  caveats <<~EOS\n'
+              '    BloatMac is ad-hoc signed and is not Apple-notarized. On first launch, try\n'
+              '    opening BloatMac, then go to System Settings > Privacy & Security, scroll to\n'
+              '    Security, and click Open Anyway. Authenticate and confirm Open once.\n'
+              '  EOS\n'
+          )
+          pattern = r'(?ms)^  caveats <<~EOS\n.*?^  EOS\n'
+          if re.search(pattern, src):
+              src = re.sub(pattern, caveats, src, count=1)
+          elif '  app "BloatMac.app"' in src:
+              src = src.replace('  app "BloatMac.app"', caveats + '\n  app "BloatMac.app"', 1)
+          else:
+              raise SystemExit('could not place BloatMac caveats')
           p.write_text(src)
           PY
+          ruby -c "$CASK"
           git --no-pager diff "$CASK"
 
       - name: Commit, push branch, open PR

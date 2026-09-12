@@ -18,6 +18,12 @@ cask "bloatmac" do
 
   depends_on macos: ">= :tahoe"
 
+  caveats <<~EOS
+    BloatMac is ad-hoc signed and is not Apple-notarized. On first launch, try
+    opening BloatMac, then go to System Settings > Privacy & Security, scroll to
+    Security, and click Open Anyway. Authenticate and confirm Open once.
+  EOS
+
   app "BloatMac.app"
 
   zap trash: [

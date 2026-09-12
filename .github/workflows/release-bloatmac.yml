@@ -54,6 +54,10 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash checks/installer_check.sh
 
+      - name: Check Homebrew cask update
+        working-directory: ${{ github.workspace }}
+        run: bash checks/bloatmac_cask_check.sh
+
       - name: Build — universal ad-hoc signed
         run: |
           xcodebuild \
