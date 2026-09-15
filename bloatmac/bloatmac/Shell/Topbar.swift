@@ -44,29 +44,29 @@ struct Topbar: View {
                     Text(storage.usedPctText)
                         .font(.system(size: 11, weight: .bold)).monospacedDigit()
                 }
-                .padding(.horizontal, 8)
+                .padding(.horizontal, 10)
                 .frame(height: 28)
-                .background(RoundedRectangle(cornerRadius: 6).fill(Tokens.bgPanel))
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Tokens.border))
+                .glassChip()
                 .foregroundStyle(Tokens.text2)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Storage widget")
 
             Button { state.toggleNotif() } label: {
+                let count = dashboard.recommendations.filter { $0.priority > 0 }.count
                 ZStack(alignment: .topTrailing) {
                     Image(systemName: "bell").font(.system(size: 12))
+                        .symbolEffect(.bounce, options: .nonRepeating, value: count)
                         .frame(width: 28, height: 28)
-                        .background(RoundedRectangle(cornerRadius: 6).fill(Tokens.bgPanel))
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Tokens.border))
+                        .glassChip(Circle())
                         .foregroundStyle(Tokens.text2)
-                    let count = dashboard.recommendations.filter { $0.priority > 0 }.count
                     if count > 0 {
                         Text("\(count)")
                             .font(.system(size: 9, weight: .heavy))
                             .foregroundStyle(.white)
                             .frame(width: 14, height: 14)
-                            .background(Circle().fill(Tokens.danger))
+                            .background(Circle().fill(Tokens.dangerGradient))
+                            .shadow(color: Tokens.danger.opacity(0.5), radius: 4)
                             .offset(x: 6, y: -4)
                     }
                 }
@@ -76,8 +76,14 @@ struct Topbar: View {
         }
         .padding(.horizontal, 14)
         .frame(height: 44)
-        .background(Tokens.bgWindow)
-        .overlay(Rectangle().frame(height: 1).foregroundStyle(Tokens.border), alignment: .bottom)
+        .background(Tokens.bgWindow)          // tint in front of the blur,
+        .background(.ultraThinMaterial)       // matching Glass.substrate
+        .overlay(
+            LinearGradient(colors: [Tokens.divider, Tokens.border, Tokens.divider],
+                           startPoint: .leading, endPoint: .trailing)
+                .frame(height: 1),
+            alignment: .bottom
+        )
         .onChange(of: state.searchFocusToken) { _, _ in
             editing = true
             DispatchQueue.main.async { searchFocused = true }
@@ -122,10 +128,8 @@ struct Topbar: View {
                         .font(.system(size: 10)).foregroundStyle(Tokens.text3).padding(6)
                 }
                 .padding(6).foregroundStyle(Tokens.text)
-                .background(Tokens.bgPanel)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Tokens.border))
-                .shadow(color: .black.opacity(0.15), radius: 12, y: 6)
+                .glassPanel(radius: Tokens.Radius.md)
+                .shadow(color: .black.opacity(0.25), radius: 20, y: 10)
                 .offset(y: 34)
             }
         }
@@ -143,13 +147,17 @@ struct Topbar: View {
                     .foregroundStyle(state.searchQuery.isEmpty ? Tokens.text3 : Tokens.text)
                     .lineLimit(1)
                 Spacer()
-                Text("⌘K").font(.system(size: 10.5, design: .monospaced)).foregroundStyle(Tokens.text3)
+                Text("⌘K")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(Tokens.text3)
+                    .padding(.horizontal, 4).padding(.vertical, 1)
+                    .background(RoundedRectangle(cornerRadius: 4, style: .continuous).fill(Tokens.bgPanel2))
+                    .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(Tokens.border))
             }
             .padding(.horizontal, 10).padding(.vertical, 4)
             .frame(minWidth: 220)
             .frame(height: 28)
-            .background(RoundedRectangle(cornerRadius: 6).fill(Tokens.bgPanel))
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Tokens.border))
+            .glassChip()
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -189,8 +197,8 @@ struct Topbar: View {
         .padding(.horizontal, 10).padding(.vertical, 4)
         .frame(minWidth: 220)
         .frame(height: 28)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Tokens.bgPanel))
-        .overlay(RoundedRectangle(cornerRadius: 6).stroke(state.accent.value, lineWidth: 1))
+        .glassChip(border: state.accent.gradient)
+        .shadow(color: state.accent.glow.opacity(0.3), radius: 8)
     }
 
     private func closeSearch() {

@@ -62,6 +62,7 @@ var SIDEBAR_NAV: [NavSection] {
 
 struct Sidebar: View {
     @EnvironmentObject var state: AppState
+    @Namespace private var navNS
     @ObservedObject private var live = LiveStorage.shared
     @ObservedObject private var largeFiles = LiveLargeFiles.shared
     @ObservedObject private var dupes = LiveDuplicates.shared
@@ -94,7 +95,7 @@ struct Sidebar: View {
                                     .padding(.horizontal, 18).padding(.top, 12).padding(.bottom, 4)
                             }
                             ForEach(section.items) { item in
-                                NavRow(item: item)
+                                NavRow(item: item, ns: navNS)
                             }
                         }
                     }
@@ -104,7 +105,14 @@ struct Sidebar: View {
             SidebarFooter()
         }
         .background(Tokens.bgSidebar)
-        .overlay(Rectangle().frame(width: 1).foregroundStyle(Tokens.border), alignment: .trailing)
+        .overlay(
+            LinearGradient(
+                colors: [Tokens.glassHighlight.opacity(0.5), Tokens.border, Tokens.divider],
+                startPoint: .top, endPoint: .bottom
+            )
+            .frame(width: 1),
+            alignment: .trailing
+        )
     }
 }
 
@@ -242,15 +250,20 @@ private struct SparkleShape: Shape {
 
 struct NavRow: View {
     let item: NavItem
+    let ns: Namespace.ID
     @EnvironmentObject var state: AppState
     @State private var hover = false
+    @State private var bounceTrigger = 0   // increments on hover-enter only
 
     var isActive: Bool { state.current == item.id }
 
     var body: some View {
         Button { state.goto(item.id) } label: {
             HStack(spacing: 9) {
-                Image(systemName: item.icon).font(.system(size: 13)).frame(width: 18)
+                Image(systemName: item.icon)
+                    .font(.system(size: 13))
+                    .frame(width: 18)
+                    .symbolEffect(.bounce, options: .nonRepeating, value: bounceTrigger)
                 Text(item.label).font(.system(size: 13, weight: .medium)).lineLimit(1)
                 Spacer(minLength: 0)
                 if let badge = item.badge { BadgeView(text: badge, kind: item.badgeKind, active: isActive) }
@@ -258,10 +271,21 @@ struct NavRow: View {
             .padding(.horizontal, 9).padding(.vertical, 5)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background {
-                RoundedRectangle(cornerRadius: 6).fill(
-                    isActive ? AnyShapeStyle(state.accent.value) :
-                    hover ? AnyShapeStyle(Tokens.bgHover) : AnyShapeStyle(Color.clear)
-                )
+                ZStack {
+                    if isActive {
+                        // Selection pill glides between rows via matched geometry.
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .fill(state.accent.gradient)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                    .strokeBorder(.white.opacity(0.22), lineWidth: 1)
+                            )
+                            .shadow(color: state.accent.glow.opacity(0.35), radius: 10, y: 3)
+                            .matchedGeometryEffect(id: "nav-active", in: ns)
+                    } else if hover {
+                        RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Tokens.bgHover)
+                    }
+                }
             }
             .foregroundStyle(isActive ? .white : Tokens.text2)
             .contentShape(Rectangle())
@@ -269,7 +293,10 @@ struct NavRow: View {
         .buttonStyle(.plain)
         .padding(.horizontal, 8)
         .padding(.vertical, 1)
-        .onHover { hover = $0 }
+        .onHover { entering in
+            hover = entering
+            if entering { bounceTrigger += 1 }
+        }
         .accessibilityLabel(Text("\(item.label)\(item.badge.map { " (\($0))" } ?? "")"))
         .accessibilityAddTraits(isActive ? .isSelected : [])
     }
@@ -283,17 +310,24 @@ struct BadgeView: View {
         Text(text)
             .font(.system(size: 10.5, weight: .bold))
             .padding(.horizontal, 6).padding(.vertical, 1)
-            .background(
-                RoundedRectangle(cornerRadius: 8).fill(bg)
-            )
+            .background(Capsule().fill(bg))
             .foregroundStyle(fg)
+            .shadow(color: glow, radius: 5)
     }
-    var bg: Color {
-        if active { return .white.opacity(0.25) }
+    var bg: AnyShapeStyle {
+        if active { return AnyShapeStyle(Color.white.opacity(0.25)) }
         switch kind {
-        case .warn: return Tokens.warn
-        case .danger: return Tokens.danger
-        case .neutral: return Tokens.bgPanel
+        case .warn:    return AnyShapeStyle(Tokens.warnGradient)
+        case .danger:  return AnyShapeStyle(Tokens.dangerGradient)
+        case .neutral: return AnyShapeStyle(Tokens.bgPanel)
+        }
+    }
+    var glow: Color {
+        guard !active else { return .clear }
+        switch kind {
+        case .warn: return Tokens.warn.opacity(0.35)
+        case .danger: return Tokens.danger.opacity(0.35)
+        case .neutral: return .clear
         }
     }
     var fg: Color {
@@ -311,7 +345,7 @@ struct SidebarFooter: View {
         let sPct = live.totalGB > 0 ? live.usedGB / live.totalGB : 0
         VStack(alignment: .leading, spacing: 6) {
             statRow(label: "Storage", pct: sPct)
-            StatBar(value: sPct, kind: sPct > 0.85 ? .danger : sPct > 0.7 ? .warn : .neutral)
+            ThinBar(value: sPct, kind: sPct > 0.85 ? .danger : sPct > 0.7 ? .warn : .neutral, height: 4)
         }
         .padding(.horizontal, 14).padding(.vertical, 12)
         .overlay(Rectangle().frame(height: 1).foregroundStyle(Tokens.divider), alignment: .top)
@@ -323,22 +357,5 @@ struct SidebarFooter: View {
             Spacer()
             Text("\(Int((pct * 100).rounded()))%").font(.system(size: 11)).monospacedDigit().foregroundStyle(Tokens.text3)
         }
-    }
-}
-
-struct StatBar: View {
-    let value: Double
-    let kind: BadgeKind
-    var color: Color {
-        switch kind { case .warn: return Tokens.warn; case .danger: return Tokens.danger; case .neutral: return Color(hex: 0x0A84FF) }
-    }
-    var body: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Capsule().fill(Tokens.bgPanel2)
-                Capsule().fill(color).frame(width: geo.size.width * value)
-            }
-        }
-        .frame(height: 4)
     }
 }
