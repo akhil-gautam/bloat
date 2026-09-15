@@ -39,12 +39,12 @@ enum DownloadCategory: String, CaseIterable {
     }
     var color: Color {
         switch self {
-        case .installer: return Color(hex: 0x0A84FF)
-        case .archive:   return Color(hex: 0xAC8E68)
-        case .media:     return Color(hex: 0xBF5AF2)
-        case .document:  return Color(hex: 0x30D158)
-        case .code:      return Color(hex: 0x64D2FF)
-        case .other:     return Color(hex: 0x8E8E93)
+        case .installer: return Color(hex: 0x4D8DFF)
+        case .archive:   return Color(hex: 0xC4A47C)
+        case .media:     return Color(hex: 0xC084FC)
+        case .document:  return Color(hex: 0x34D399)
+        case .code:      return Color(hex: 0x67E8F9)
+        case .other:     return Color(hex: 0x94A0B8)
         }
     }
 }
