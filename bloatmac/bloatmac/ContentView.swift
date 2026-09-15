@@ -6,7 +6,7 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            DesktopBackground()
+            AuroraBackground()
             AppShell()
             if state.notifOpen { NotifPanel().transition(.opacity) }
             if state.widgetOpen && state.menubarWidgetEnabled { MenuBarWidgetPopover().transition(.opacity) }
@@ -33,11 +33,10 @@ struct AppShell: View {
                 Topbar().zIndex(1)
                 ScreenRouter()
                     .id(state.current)
-                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
+                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .offset(y: 10)).combined(with: .scale(scale: 0.995, anchor: .top)))
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Tokens.bgWindow)
     }
 }
 

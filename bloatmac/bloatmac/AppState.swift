@@ -117,7 +117,7 @@ final class AppState: ObservableObject {
     }
 
     func goto(_ s: Screen) {
-        withAnimation(.easeOut(duration: 0.22)) { current = s }
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { current = s }
         notifOpen = false
         widgetOpen = false
     }
