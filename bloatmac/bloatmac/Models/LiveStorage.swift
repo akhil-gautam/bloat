@@ -52,15 +52,15 @@ final class LiveStorage: ObservableObject {
     nonisolated static let categorySpec: [CategorySpec] = {
         let home = NSHomeDirectory()
         return [
-            CategorySpec(id: "apps",      name: "Applications",  hex: 0x0A84FF, paths: ["/Applications", "\(home)/Applications"]),
-            CategorySpec(id: "docs",      name: "Documents",     hex: 0x30D158, paths: ["\(home)/Documents"]),
-            CategorySpec(id: "photos",    name: "Photos",        hex: 0xFF9F0A, paths: ["\(home)/Pictures"]),
-            CategorySpec(id: "videos",    name: "Movies",        hex: 0xBF5AF2, paths: ["\(home)/Movies"]),
-            CategorySpec(id: "music",     name: "Music",         hex: 0xFF375F, paths: ["\(home)/Music"]),
-            CategorySpec(id: "mail",      name: "Mail",          hex: 0x64D2FF, paths: ["\(home)/Library/Mail"]),
+            CategorySpec(id: "apps",      name: "Applications",  hex: 0x4D8DFF, paths: ["/Applications", "\(home)/Applications"]),
+            CategorySpec(id: "docs",      name: "Documents",     hex: 0x34D399, paths: ["\(home)/Documents"]),
+            CategorySpec(id: "photos",    name: "Photos",        hex: 0xFBBF24, paths: ["\(home)/Pictures"]),
+            CategorySpec(id: "videos",    name: "Movies",        hex: 0xC084FC, paths: ["\(home)/Movies"]),
+            CategorySpec(id: "music",     name: "Music",         hex: 0xF472B6, paths: ["\(home)/Music"]),
+            CategorySpec(id: "mail",      name: "Mail",          hex: 0x67E8F9, paths: ["\(home)/Library/Mail"]),
             CategorySpec(id: "caches",    name: "Caches & Logs", hex: 0xA5C9FF, paths: ["\(home)/Library/Caches", "\(home)/Library/Logs"]),
             CategorySpec(id: "downloads", name: "Downloads",     hex: 0xFFD479, paths: ["\(home)/Downloads"]),
-            CategorySpec(id: "trash",     name: "Trash",         hex: 0xAC8E68, paths: ["\(home)/.Trash"]),
+            CategorySpec(id: "trash",     name: "Trash",         hex: 0xC4A47C, paths: ["\(home)/.Trash"]),
         ]
     }()
 
@@ -195,7 +195,7 @@ final class LiveStorage: ObservableObject {
         if rest > 0 {
             result.append(LiveCategory(id: "app-rest",
                                        name: "Other apps (\(apps.count - top.count))",
-                                       color: Color(hex: 0x8E8E93),
+                                       color: Color(hex: 0x94A0B8),
                                        size: Double(rest) / 1_000_000_000))
         }
         return result
