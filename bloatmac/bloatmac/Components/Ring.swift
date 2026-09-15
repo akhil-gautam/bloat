@@ -14,8 +14,12 @@ struct Ring: View {
             Circle().stroke(Tokens.bgPanel2, lineWidth: stroke)
             Circle()
                 .trim(from: 0, to: animated)
-                .stroke(color, style: StrokeStyle(lineWidth: stroke, lineCap: .round))
+                .stroke(
+                    AngularGradient(colors: [color.opacity(0.7), color], center: .center),
+                    style: StrokeStyle(lineWidth: stroke, lineCap: .round)
+                )
                 .rotationEffect(.degrees(-90))
+                .shadow(color: color.opacity(0.4), radius: stroke * 0.8)
             if let label {
                 Text(label).font(.system(size: 12, weight: .bold)).foregroundStyle(Tokens.text)
             }

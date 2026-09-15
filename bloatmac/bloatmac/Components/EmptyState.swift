@@ -21,14 +21,32 @@ struct EmptyState: View {
     let message: String
     var actionLabel: String? = nil
     var action: (() -> Void)? = nil
+    @EnvironmentObject var state: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.controlActiveState) private var activeState
 
     var body: some View {
         VStack(spacing: 14) {
             Image(systemName: icon)
                 .font(.system(size: 40, weight: .light))
-                .foregroundStyle(Tokens.text3)
+                .foregroundStyle(state.accent.gradient)
+                // Pause with the aurora: no perpetual symbol animation while
+                // the window is in the background.
+                .symbolEffect(.breathe, options: .repeating,
+                              isActive: !reduceMotion && activeState != .inactive)
                 .frame(width: 88, height: 88)
-                .background(Circle().fill(Tokens.bgPanel2))
+                .background(
+                    ZStack {
+                        Circle().fill(state.accent.soft.opacity(0.5))
+                        Circle().fill(.ultraThinMaterial)
+                        Circle().strokeBorder(
+                            LinearGradient(colors: [Tokens.glassHighlight, Tokens.border],
+                                           startPoint: .top, endPoint: .bottom),
+                            lineWidth: 1
+                        )
+                    }
+                )
+                .shadow(color: state.accent.glow.opacity(0.25), radius: 24)
             Text(title).font(.system(size: 18, weight: .bold)).foregroundStyle(Tokens.text)
             Text(message)
                 .font(.system(size: 13))
@@ -42,6 +60,5 @@ struct EmptyState: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(40)
-        .background(Tokens.bgWindow)
     }
 }

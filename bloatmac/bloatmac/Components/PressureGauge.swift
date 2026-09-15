@@ -35,8 +35,11 @@ struct PressureGauge: View {
                         startPoint: .leading, endPoint: .trailing
                     )
                     .clipShape(Capsule())
-                    Capsule().fill(status.color)
+                    Capsule()
+                        .fill(LinearGradient(colors: [status.color.opacity(0.65), status.color],
+                                             startPoint: .leading, endPoint: .trailing))
                         .frame(width: max(0, min(1, value)) * geo.size.width)
+                        .shadow(color: status.color.opacity(0.5), radius: 4)
                         .animation(.easeOut(duration: 0.7), value: value)
                 }
             }
