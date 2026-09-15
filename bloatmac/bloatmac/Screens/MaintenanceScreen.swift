@@ -99,9 +99,7 @@ struct MaintenanceScreen: View {
                 .background(Tokens.bgPanel2)
             }
         }
-        .background(Tokens.bgPanel)
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Tokens.border))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .glassPanel(radius: Tokens.Radius.md)
     }
 
     private func statusDot(_ s: MaintenanceStatus) -> some View {

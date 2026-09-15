@@ -100,9 +100,7 @@ struct PermissionsAuditScreen: View {
                 }
             }
         }
-        .background(Tokens.bgPanel)
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Tokens.border))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .glassPanel(radius: Tokens.Radius.md)
     }
 
     private var managedPill: some View {

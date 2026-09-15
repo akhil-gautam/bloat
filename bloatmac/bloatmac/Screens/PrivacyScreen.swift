@@ -141,9 +141,7 @@ struct PrivacyScreen: View {
                 .background(Tokens.warn.opacity(0.08))
             }
         }
-        .background(Tokens.bgPanel)
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Tokens.border))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .glassPanel(radius: Tokens.Radius.md)
     }
 
     private var runningPill: some View {

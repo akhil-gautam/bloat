@@ -61,9 +61,7 @@ struct DiskHealthScreen: View {
             Spacer()
         }
         .padding(16)
-        .background(Tokens.bgPanel)
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Tokens.border))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .glassPanel(radius: Tokens.Radius.md)
     }
 
     @ViewBuilder
@@ -109,9 +107,7 @@ struct DiskHealthScreen: View {
             }
         }
         .padding(14)
-        .background(Tokens.bgPanel)
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Tokens.border))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .glassPanel(radius: Tokens.Radius.md)
     }
 
     private var systemPill: some View {
