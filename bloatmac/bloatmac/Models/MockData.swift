@@ -38,7 +38,7 @@ final class MockData {
         .init(name: "Discord",          size: 2.6,  icon: "Ds", color: Color(hex: 0x5865F2)),
         .init(name: "Chrome",           size: 2.5,  icon: "C",  color: Color(hex: 0x4285F4)),
         .init(name: "VS Code",          size: 2.4,  icon: "Vc", color: Color(hex: 0x007ACC)),
-        .init(name: "Other apps (273)", size: 28.9, icon: "·",  color: Color(hex: 0x8E8E93)),
+        .init(name: "Other apps (273)", size: 28.9, icon: "·",  color: Color(hex: 0x94A0B8)),
     ]
 
     let largeFiles: [LargeFile] = [
@@ -111,7 +111,7 @@ final class MockData {
 
     let memProcesses: [ProcessEntry] = [
         .init(name: "Google Chrome Helper (Renderer)", mem: 1840, cpu: 12.4, energy: "High",   icon: "C",  color: Color(hex: 0x4285F4), pid: 4291),
-        .init(name: "kernel_task",                     mem: 1620, cpu: 4.2,  energy: "Low",    icon: "K",  color: Color(hex: 0x8E8E93), pid: 1, locked: true),
+        .init(name: "kernel_task",                     mem: 1620, cpu: 4.2,  energy: "Low",    icon: "K",  color: Color(hex: 0x94A0B8), pid: 1, locked: true),
         .init(name: "Xcode",                           mem: 1480, cpu: 18.6, energy: "High",   icon: "X",  color: Color(hex: 0x147EFB), pid: 9821),
         .init(name: "Slack Helper",                    mem: 1240, cpu: 8.1,  energy: "Medium", icon: "Sl", color: Color(hex: 0x4A154B), pid: 6021),
         .init(name: "WindowServer",                    mem: 980,  cpu: 6.4,  energy: "Medium", icon: "W",  color: Color(hex: 0x34C759), pid: 178),
@@ -119,9 +119,9 @@ final class MockData {
         .init(name: "Spotify",                         mem: 740,  cpu: 2.8,  energy: "Low",    icon: "Sp", color: Color(hex: 0x1DB954), pid: 5210),
         .init(name: "Notion",                          mem: 620,  cpu: 1.9,  energy: "Low",    icon: "N",  color: Color(hex: 0x0a0a0a), pid: 3104),
         .init(name: "Docker Desktop",                  mem: 540,  cpu: 6.2,  energy: "Medium", icon: "D",  color: Color(hex: 0x2496ED), pid: 2210),
-        .init(name: "mds_stores",                      mem: 410,  cpu: 0.4,  energy: "Low",    icon: "M",  color: Color(hex: 0xAC8E68), pid: 422),
-        .init(name: "Mail",                            mem: 380,  cpu: 0.9,  energy: "Low",    icon: "✉",  color: Color(hex: 0x0A84FF), pid: 7104),
-        .init(name: "Photos",                          mem: 340,  cpu: 12.1, energy: "High",   icon: "P",  color: Color(hex: 0xFF9F0A), pid: 6821, indexing: true),
+        .init(name: "mds_stores",                      mem: 410,  cpu: 0.4,  energy: "Low",    icon: "M",  color: Color(hex: 0xC4A47C), pid: 422),
+        .init(name: "Mail",                            mem: 380,  cpu: 0.9,  energy: "Low",    icon: "✉",  color: Color(hex: 0x4D8DFF), pid: 7104),
+        .init(name: "Photos",                          mem: 340,  cpu: 12.1, energy: "High",   icon: "P",  color: Color(hex: 0xFBBF24), pid: 6821, indexing: true),
     ]
 
     let memory = MemoryStats(total: 24576, appUsed: 11240, wired: 4180, compressed: 2640, cached: 4980, free: 1536, swap: 2480, pressure: 0.62)
@@ -132,7 +132,7 @@ final class MockData {
         .init(name: "Spotify",       up: 12,   down: 3210,  total: 1.4,  color: Color(hex: 0x1DB954)),
         .init(name: "Dropbox",       up: 1820, down: 92,    total: 0.6,  color: Color(hex: 0x0061FF)),
         .init(name: "Zoom",          up: 0,    down: 0,     total: 0.4,  color: Color(hex: 0x2D8CFF)),
-        .init(name: "Mail",          up: 18,   down: 240,   total: 0.2,  color: Color(hex: 0x0A84FF)),
+        .init(name: "Mail",          up: 18,   down: 240,   total: 0.2,  color: Color(hex: 0x4D8DFF)),
         .init(name: "Backblaze",     up: 940,  down: 8,     total: 0.18, color: Color(hex: 0xE22424)),
     ]
 

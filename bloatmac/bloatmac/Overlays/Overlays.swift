@@ -51,9 +51,7 @@ struct NotifPanel: View {
             }
         }
         .frame(width: 340, height: 320)
-        .background(Tokens.bgPanel)
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Tokens.border))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .glassPanel(radius: Tokens.Radius.md)
         .shadow(color: .black.opacity(0.4), radius: 32, y: 12)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
         .padding(.top, 36).padding(.trailing, 36)
@@ -68,7 +66,7 @@ struct NotifRow: View {
         case "danger": return Tokens.danger
         case "warn":   return Tokens.warn
         case "good":   return Tokens.good
-        default:       return Color(hex: 0x0A84FF)
+        default:       return Tokens.catApps
         }
     }
     var body: some View {
@@ -137,9 +135,7 @@ struct MenuBarWidgetPopover: View {
         }
         .padding(14)
         .frame(width: 280)
-        .background(Tokens.bgPanel)
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Tokens.border))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .glassPanel(radius: Tokens.Radius.md)
         .shadow(color: .black.opacity(0.30), radius: 28, y: 10)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
         .padding(.top, 64).padding(.trailing, 60)
@@ -155,7 +151,8 @@ struct PermissionsGate: View {
 
     var body: some View {
         ZStack {
-            Color.black.opacity(0.55).ignoresSafeArea()
+            Rectangle().fill(.ultraThinMaterial).ignoresSafeArea()
+                .overlay(Color.black.opacity(0.35).ignoresSafeArea())
                 .onTapGesture { /* swallow — modal */ }
             VStack(alignment: .leading, spacing: 18) {
                 HStack(spacing: 12) {
@@ -192,9 +189,7 @@ struct PermissionsGate: View {
             }
             .padding(22)
             .frame(width: 480)
-            .background(Tokens.bgPanel)
-            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Tokens.border))
-            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .glassPanel()
             .shadow(color: .black.opacity(0.4), radius: 32, y: 12)
         }
     }
@@ -229,11 +224,19 @@ struct Onboarding: View {
     ]
     var body: some View {
         ZStack {
+            Rectangle().fill(.ultraThinMaterial).ignoresSafeArea()
             Tokens.bgWindow.ignoresSafeArea()
             VStack(spacing: 24) {
                 BrandMark().scaleEffect(2.4).padding(.bottom, 8)
+                    .background(
+                        Circle()
+                            .fill(state.accent.glow.opacity(0.35))
+                            .frame(width: 150, height: 150)
+                            .blur(radius: 40)
+                    )
                 Text("Welcome to BloatMac").font(.system(size: 22, weight: .bold))
                 Text(phase).font(.system(size: 13)).foregroundStyle(Tokens.text3)
+                    .contentTransition(.opacity)
                 Text("A quick tour. No files are changed.").font(.system(size: 11)).foregroundStyle(Tokens.text3)
                 ProgressView(value: progress).progressViewStyle(.linear).frame(width: 280).tint(state.accent.value)
                 Button("Skip") { state.dismissOnboarding() }
@@ -241,6 +244,10 @@ struct Onboarding: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(Tokens.text3)
             }
+            .padding(40)
+            .frame(width: 480)
+            .glassPanel(radius: Tokens.Radius.xl)
+            .shadow(color: .black.opacity(0.35), radius: 40, y: 16)
         }
         .task { await runScan() }
     }
