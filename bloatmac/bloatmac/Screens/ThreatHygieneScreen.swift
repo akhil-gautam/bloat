@@ -78,9 +78,7 @@ struct ThreatHygieneScreen: View {
             Spacer()
         }
         .padding(16)
-        .background(Tokens.bgPanel)
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Tokens.border))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .glassPanel(radius: Tokens.Radius.md)
     }
 
     private func countPill(_ text: String, _ color: Color) -> some View {
@@ -108,9 +106,7 @@ struct ThreatHygieneScreen: View {
                 Divider().opacity(0.4)
             }
         }
-        .background(Tokens.bgPanel)
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Tokens.border))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .glassPanel(radius: Tokens.Radius.md)
     }
 
     @ViewBuilder

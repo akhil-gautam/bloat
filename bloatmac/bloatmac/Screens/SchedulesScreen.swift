@@ -55,9 +55,7 @@ struct SchedulesScreen: View {
                 .font(.system(size: 11)).foregroundStyle(Tokens.text3)
         }
         .padding(16)
-        .background(Tokens.bgPanel)
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Tokens.border))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .glassPanel(radius: Tokens.Radius.md)
     }
 
     private var notificationCard: some View {
@@ -108,9 +106,7 @@ struct SchedulesScreen: View {
             }
         }
         .padding(16)
-        .background(Tokens.bgPanel)
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Tokens.border))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .glassPanel(radius: Tokens.Radius.md)
     }
 
     private var statusCard: some View {
@@ -128,9 +124,7 @@ struct SchedulesScreen: View {
             }
         }
         .padding(16)
-        .background(Tokens.bgPanel)
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Tokens.border))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .glassPanel(radius: Tokens.Radius.md)
     }
 
     private func statusRow(_ label: String, _ value: String) -> some View {

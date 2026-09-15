@@ -64,18 +64,15 @@ struct SmartCareScreen: View {
         .padding(.horizontal, 24).padding(.vertical, 28)
         .frame(maxWidth: .infinity)
         .background(
-            ZStack {
-                Tokens.bgPanel
-                // Faint accent gradient sweep behind the hero so the panel
-                // doesn't feel like a flat box during the scan.
-                LinearGradient(
-                    colors: [state.accent.value.opacity(0.08), .clear],
-                    startPoint: .top, endPoint: .bottom
-                )
-            }
+            // Faint accent gradient sweep behind the hero so the panel
+            // doesn't feel like a flat box during the scan.
+            LinearGradient(
+                colors: [state.accent.value.opacity(0.08), .clear],
+                startPoint: .top, endPoint: .bottom
+            )
         )
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Tokens.border))
-        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .glassPanel()
+        .glowPulse(active: care.running, color: state.accent.value)
     }
 
     /// Pulsing accent ring + step-icon centerpiece + verb-form copy + percent.
@@ -100,9 +97,14 @@ struct SmartCareScreen: View {
                     // Inner progress arc — driven by overall scan progress.
                     Circle()
                         .trim(from: 0, to: max(0.04, CGFloat(care.progress)))
-                        .stroke(state.accent.value, style: .init(lineWidth: 4, lineCap: .round))
+                        .stroke(
+                            AngularGradient(colors: [state.accent.value, state.accent.companion, state.accent.value],
+                                            center: .center),
+                            style: .init(lineWidth: 4, lineCap: .round)
+                        )
                         .frame(width: 110, height: 110)
                         .rotationEffect(.degrees(-90))
+                        .shadow(color: state.accent.glow.opacity(0.5), radius: 6)
                     // Subtle tick marks rotating around at constant speed —
                     // pure ornament, signals "active".
                     Circle()
@@ -113,7 +115,7 @@ struct SmartCareScreen: View {
                     // Step icon at the center — swaps as the scan progresses.
                     Image(systemName: care.step.icon)
                         .font(.system(size: 34, weight: .semibold))
-                        .foregroundStyle(state.accent.value)
+                        .foregroundStyle(state.accent.gradient)
                         .symbolEffect(.pulse, options: .repeating, value: care.step)
                         .contentTransition(.symbolEffect(.replace))
                 }
@@ -195,6 +197,7 @@ struct SmartCareScreen: View {
         case .done:
             ZStack {
                 Circle().fill(Tokens.good.opacity(0.18)).frame(width: 22, height: 22)
+                    .shadow(color: Tokens.good.opacity(0.4), radius: 5)
                 Image(systemName: "checkmark")
                     .font(.system(size: 11, weight: .heavy))
                     .foregroundStyle(Tokens.good)
@@ -298,9 +301,7 @@ struct SmartCareScreen: View {
             }
             .padding(20)
             .frame(width: 240, alignment: .leading)
-            .background(Tokens.bgPanel)
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Tokens.border))
-            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .glassPanel(radius: Tokens.Radius.md)
 
             // Quick stats
             VStack(spacing: 0) {
@@ -317,9 +318,7 @@ struct SmartCareScreen: View {
                 statRow("Storage", "\(Int((r.storagePct * 100).rounded()))% used", icon: "internaldrive")
             }
             .frame(maxWidth: .infinity)
-            .background(Tokens.bgPanel)
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Tokens.border))
-            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .glassPanel(radius: Tokens.Radius.md)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -372,9 +371,7 @@ struct SmartCareScreen: View {
             }
         }
         .padding(12)
-        .background(Tokens.bgPanel)
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Tokens.border))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .glassPanel(radius: Tokens.Radius.md)
     }
 
     // MARK: - Idle
@@ -391,9 +388,7 @@ struct SmartCareScreen: View {
             Spacer()
         }
         .padding(18)
-        .background(Tokens.bgPanel)
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Tokens.border))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .glassPanel(radius: Tokens.Radius.md)
     }
 
     // MARK: - Format helpers
